@@ -226,6 +226,11 @@ class RawTransaction(BaseTransaction):
 class _Executor(abstract.AsyncIOExecutor):
     # TODO: Remove this, once we land this in gel-python and update
     # our bindings.
+    def _get_active_tx_options(
+        self
+    ) -> typing.Optional[options.TransactionOptions]:
+        raise NotImplementedError
+
     async def query_graphql_json(
         self, query, *args: typing.Any, **kwargs: typing.Any
     ) -> str:
@@ -242,7 +247,7 @@ class _Executor(abstract.AsyncIOExecutor):
                 query_options=abstract._query_single_json_opts,
                 retry_options=self._get_retry_options(),
                 state=self._get_state(),
-                # transaction_options=self._get_active_tx_options(),
+                transaction_options=self._get_active_tx_options(),
                 warning_handler=self._get_warning_handler(),
                 annotations=self._get_annotations(),
             )
@@ -327,6 +332,11 @@ class Iteration(BaseTransaction, _Executor):
     def _get_retry_options(self) -> options.RetryOptions:
         return options.RetryOptions.defaults()
 
+    def _get_active_tx_options(
+        self
+    ) -> typing.Optional[options.TransactionOptions]:
+        return self._options
+
     def _get_state(self) -> options.State:
         return self._connection._get_state()
 
@@ -399,6 +409,11 @@ class Connection(options._OptionsMixin, _Executor):
 
     def _get_retry_options(self) -> options.RetryOptions:
         return self._options.retry_options
+
+    def _get_active_tx_options(
+        self
+    ) -> typing.Optional[options.TransactionOptions]:
+        return self._options.transaction_options
 
     def _get_state(self):
         return self._options.state

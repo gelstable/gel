@@ -67,4 +67,4 @@ build: build-reqs
 
 
 clean:
-	git clean -Xfd -e "!/*.code-workspace" -e "!/*.vscode"
+	git clean -Xfd -e "!/*.code-workspace" -e "!/*.vscode" -e "!/.envrc"
