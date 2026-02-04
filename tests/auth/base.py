@@ -234,11 +234,11 @@ def b64_decode_padding(s):
 SIGNING_KEY = 'a' * 32
 GITHUB_SECRET = 'b' * 32
 GOOGLE_SECRET = 'c' * 32
-AZURE_SECRET = 'c' * 32
-APPLE_SECRET = 'c' * 32
-DISCORD_SECRET = 'd' * 32
-SLACK_SECRET = 'd' * 32
-GENERIC_OIDC_SECRET = 'e' * 32
+AZURE_SECRET = 'd' * 32
+APPLE_SECRET = 'e' * 32
+DISCORD_SECRET = 'f' * 32
+SLACK_SECRET = 'g' * 32
+GENERIC_OIDC_SECRET = 'h' * 32
 APP_NAME = "Test App" * 13
 LOGO_URL = "http://example.com/logo.png"
 DARK_LOGO_URL = "http://example.com/darklogo.png"
