@@ -400,7 +400,7 @@ class TestOAuth(BaseAuthTestCase):
                         # Test Webhook side effect
                         async for tr in self.try_until_succeeds(
                             delay=2,
-                            timeout=120,
+                            timeout=15,
                             ignore=(KeyError, AssertionError),
                         ):
                             async with tr:
