@@ -72,66 +72,64 @@ class TestEmailPassword(BaseAuthTestCase):
                     "challenge": challenge,
                 }
 
-                # Test Success
-                _, headers, status = self.http_con_request(
-                    http_con,
-                    None,
-                    path="register",
-                    method="POST",
-                    body=urllib.parse.urlencode(form_data).encode(),
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded"
-                    },
-                )
-                self.assertEqual(status, 302)
-                location = headers.get("location")
-                self.assertIn("code=", location)
+                with self.subTest("basic_registration"):
+                    _, headers, status = self.http_con_request(
+                        http_con,
+                        None,
+                        path="register",
+                        method="POST",
+                        body=urllib.parse.urlencode(form_data).encode(),
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded"
+                        },
+                    )
+                    self.assertEqual(status, 302)
+                    location = headers.get("location")
+                    self.assertIn("code=", location)
 
-                # Verify DB
-                identity = await self.con.query(
-                    """
-                    SELECT ext::auth::LocalIdentity
-                    FILTER .<identity[is ext::auth::EmailPasswordFactor]
-                        .email = <str>$email;
-                    """,
-                    email=email,
-                )
-                self.assertEqual(len(identity), 1)
+                    identity = await self.con.query(
+                        """
+                        SELECT ext::auth::LocalIdentity
+                        FILTER .<identity[is ext::auth::EmailPasswordFactor]
+                            .email = <str>$email;
+                        """,
+                        email=email,
+                    )
+                    self.assertEqual(len(identity), 1)
 
-                # Test JSON Registration (json_02 logic)
-                email_json = f"{uuid.uuid4()}@example.com"
-                json_data = {
-                    "provider": "builtin::local_emailpassword",
-                    "email": email_json,
-                    "password": "test_password_json",
-                    "challenge": str(uuid.uuid4()),
-                }
-                body, _, status = self.http_con_request(
-                    http_con,
-                    None,
-                    path="register",
-                    method="POST",
-                    body=json.dumps(json_data).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-                self.assertEqual(status, 201)
-                self.assertIn("code", json.loads(body))
+                with self.subTest("json_registration"):
+                    email_json = f"{uuid.uuid4()}@example.com"
+                    json_data = {
+                        "provider": "builtin::local_emailpassword",
+                        "email": email_json,
+                        "password": "test_password_json",
+                        "challenge": str(uuid.uuid4()),
+                    }
+                    body, _, status = self.http_con_request(
+                        http_con,
+                        None,
+                        path="register",
+                        method="POST",
+                        body=json.dumps(json_data).encode(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    self.assertEqual(status, 201)
+                    self.assertIn("code", json.loads(body))
 
-                # Test Validation (form_02 logic)
-                # Invalid redirect
-                form_data["redirect_to"] = "https://not-allowed.com"
-                form_data["email"] = f"{uuid.uuid4()}@example.com"
-                _, _, status = self.http_con_request(
-                    http_con,
-                    None,
-                    path="register",
-                    method="POST",
-                    body=urllib.parse.urlencode(form_data).encode(),
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded"
-                    },
-                )
-                self.assertEqual(status, 400)
+                with self.subTest("invalid_redirect"):
+                    form_data["redirect_to"] = "https://not-allowed.com"
+                    form_data["email"] = f"{uuid.uuid4()}@example.com"
+                    _, _, status = self.http_con_request(
+                        http_con,
+                        None,
+                        path="register",
+                        method="POST",
+                        body=urllib.parse.urlencode(form_data).encode(),
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded"
+                        },
+                    )
+                    self.assertEqual(status, 400)
 
         finally:
             await self.con.query(
