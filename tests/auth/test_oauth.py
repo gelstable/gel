@@ -845,7 +845,7 @@ class TestOAuth(BaseAuthTestCase):
             self.assertEqual(status, 302)
 
             location = headers.get("location")
-            assert location is not None
+            self.assertIsNotNone(location)
             server_url = urllib.parse.urlparse(self.http_addr)
             url = urllib.parse.urlparse(location)
             self.assertEqual(url.scheme, server_url.scheme)

@@ -23,7 +23,6 @@ import uuid
 import json
 import base64
 import datetime
-import argon2
 import os
 import pickle
 import re
@@ -35,8 +34,6 @@ from email.message import EmailMessage
 from edb.testbase import http as tb
 from edb.server.protocol.auth_ext import jwt as auth_jwt
 from edb.server.auth import JWKSet
-
-ph = argon2.PasswordHasher()
 
 HTTP_TEST_PORT: contextvars.ContextVar[str] = contextvars.ContextVar(
     'HTTP_TEST_PORT'
