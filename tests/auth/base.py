@@ -373,6 +373,7 @@ class BaseAuthTestCase(tb.ExtAuthTestCase):
     jwkset_cache: dict[str, JWKSet] = {}
 
     def setUp(self):
+        super().setUp()
         self.mock_oauth_server = tb.MockHttpServer(
             handler_type=tb.MultiHostMockHttpServerHandler
         )
@@ -381,7 +382,6 @@ class BaseAuthTestCase(tb.ExtAuthTestCase):
 
         self.mock_net_server = tb.MockHttpServer()
         self.mock_net_server.start()
-        super().setUp()
 
     def tearDown(self):
         if self.mock_oauth_server is not None:
