@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import urllib.parse
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
 
 from edb.server.protocol.auth_ext import jwt as auth_jwt
 from .base import BaseAuthTestCase
@@ -21,6 +23,28 @@ from .base import (
     GENERIC_OIDC_DISCOVERY_DOCUMENT,
     utcnow,
 )
+
+
+@dataclass(frozen=True)
+class OAuthCallbackConfig:
+    provider_name: str
+    client_secret: Optional[str]
+    token_request_url: Optional[str]
+    token_response_body: Optional[Mapping[str, Any]] = None
+    user_info_request_url: Optional[str] = None
+    user_info_response_body: Optional[Mapping[str, Any]] = None
+    issuer_url: Optional[str] = None
+    expected_identity_issuer: Optional[str] = None
+    webhook_verification: bool = True
+    callback_method: str = "GET"
+    discovery_url: Optional[str] = None
+    discovery_document: Optional[Mapping[str, Any]] = None
+    jwks_url: Optional[str] = None
+    jwks_issuer: Optional[str] = None
+    jwks_token_url: Optional[str] = None
+    jwks_access_token_name: str = "access_token"
+    is_builtin: bool = True
+    verify_identity: bool = True
 
 
 class TestOAuth(BaseAuthTestCase):
@@ -144,28 +168,26 @@ class TestOAuth(BaseAuthTestCase):
             )
             self.assertEqual(pkce[0].id, repeat_pkce.id)
 
-    async def _test_oauth_callback(
-        self,
-        provider_name,
-        client_secret,
-        token_request_url,
-        token_response_body=None,
-        user_info_request_url=None,
-        user_info_response_body=None,
-        issuer_url=None,
-        expected_identity_issuer=None,
-        webhook_verification=True,
-        callback_method="GET",
-        discovery_url=None,
-        discovery_document=None,
-        jwks_url=None,
-        jwks_issuer=None,
-        jwks_token_url=None,  # URL to register for token endpoint if
-        # using generate_and_serve_jwk
-        jwks_access_token_name="access_token",
-        is_builtin=True,
-        verify_identity=True,
-    ):
+    async def _test_oauth_callback(self, config: OAuthCallbackConfig):
+        provider_name = config.provider_name
+        client_secret = config.client_secret
+        token_request_url = config.token_request_url
+        token_response_body = config.token_response_body
+        user_info_request_url = config.user_info_request_url
+        user_info_response_body = config.user_info_response_body
+        issuer_url = config.issuer_url
+        expected_identity_issuer = config.expected_identity_issuer
+        webhook_verification = config.webhook_verification
+        callback_method = config.callback_method
+        discovery_url = config.discovery_url
+        discovery_document = config.discovery_document
+        jwks_url = config.jwks_url
+        jwks_issuer = config.jwks_issuer
+        jwks_token_url = config.jwks_token_url
+        jwks_access_token_name = config.jwks_access_token_name
+        is_builtin = config.is_builtin
+        verify_identity = config.verify_identity
+
         if expected_identity_issuer is None:
             expected_identity_issuer = issuer_url
 
@@ -492,24 +514,28 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_github",
-            client_secret=GITHUB_SECRET,
-            token_request_url="https://github.com/login/oauth/access_token",
-            token_response_body={
-                "access_token": "github_access_token",
-                "scope": "read:user",
-                "token_type": "bearer",
-            },
-            user_info_request_url="https://api.github.com/user",
-            user_info_response_body={
-                "id": 1,
-                "login": "octocat",
-                "name": "monalisa octocat",
-                "email": "octocat@example.com",
-                "avatar_url": "https://example.com/example.jpg",
-                "updated_at": utcnow().isoformat(),
-            },
-            issuer_url="https://github.com",
+            OAuthCallbackConfig(
+                provider_name="oauth_github",
+                client_secret=GITHUB_SECRET,
+                token_request_url=(
+                    "https://github.com/login/oauth/access_token"
+                ),
+                token_response_body={
+                    "access_token": "github_access_token",
+                    "scope": "read:user",
+                    "token_type": "bearer",
+                },
+                user_info_request_url="https://api.github.com/user",
+                user_info_response_body={
+                    "id": 1,
+                    "login": "octocat",
+                    "name": "monalisa octocat",
+                    "email": "octocat@example.com",
+                    "avatar_url": "https://example.com/example.jpg",
+                    "updated_at": utcnow().isoformat(),
+                },
+                issuer_url="https://github.com",
+            )
         )
 
     async def test_oauth_discord_flow(self):
@@ -521,24 +547,26 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_discord",
-            client_secret=DISCORD_SECRET,
-            token_request_url="https://discord.com/api/oauth2/token",
-            token_response_body={
-                "access_token": "discord_access_token",
-                "scope": "read:user",
-                "token_type": "bearer",
-            },
-            user_info_request_url="https://discord.com/api/v10/users/@me",
-            user_info_response_body={
-                "id": 1,
-                "username": "dischord",
-                "global_name": "Ian MacKaye",
-                "email": "ian@example.com",
-                "picture": "https://example.com/example.jpg",
-            },
-            issuer_url="https://discord.com",
-            webhook_verification=False,
+            OAuthCallbackConfig(
+                provider_name="oauth_discord",
+                client_secret=DISCORD_SECRET,
+                token_request_url="https://discord.com/api/oauth2/token",
+                token_response_body={
+                    "access_token": "discord_access_token",
+                    "scope": "read:user",
+                    "token_type": "bearer",
+                },
+                user_info_request_url=("https://discord.com/api/v10/users/@me"),
+                user_info_response_body={
+                    "id": 1,
+                    "username": "dischord",
+                    "global_name": "Ian MacKaye",
+                    "email": "ian@example.com",
+                    "picture": "https://example.com/example.jpg",
+                },
+                issuer_url="https://discord.com",
+                webhook_verification=False,
+            )
         )
 
     async def test_oauth_google_flow(self):
@@ -552,17 +580,22 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_google",
-            client_secret=GOOGLE_SECRET,
-            token_request_url="https://oauth2.googleapis.com/token",
-            issuer_url="https://accounts.google.com",
-            discovery_url="https://accounts.google.com/.well-known/openid-configuration",
-            discovery_document=GOOGLE_DISCOVERY_DOCUMENT,
-            jwks_url="https://www.googleapis.com/oauth2/v3/certs",
-            jwks_token_url="https://oauth2.googleapis.com/token",
-            jwks_issuer="https://accounts.google.com",
-            jwks_access_token_name="google_access_token",
-            webhook_verification=False,
+            OAuthCallbackConfig(
+                provider_name="oauth_google",
+                client_secret=GOOGLE_SECRET,
+                token_request_url="https://oauth2.googleapis.com/token",
+                issuer_url="https://accounts.google.com",
+                discovery_url=(
+                    "https://accounts.google.com/"
+                    ".well-known/openid-configuration"
+                ),
+                discovery_document=GOOGLE_DISCOVERY_DOCUMENT,
+                jwks_url="https://www.googleapis.com/oauth2/v3/certs",
+                jwks_token_url="https://oauth2.googleapis.com/token",
+                jwks_issuer="https://accounts.google.com",
+                jwks_access_token_name="google_access_token",
+                webhook_verification=False,
+            )
         )
 
     async def test_oauth_azure_flow(self):
@@ -576,19 +609,31 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_azure",
-            client_secret=AZURE_SECRET,
-            token_request_url=None,
-            issuer_url="https://login.microsoftonline.com/{tenantid}/v2.0",
-            expected_identity_issuer="https://login.microsoftonline.com",
-            discovery_url="https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
-            discovery_document=AZURE_DISCOVERY_DOCUMENT,
-            jwks_url="https://login.microsoftonline.com/common/discovery/v2.0/keys",
-            jwks_token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
-            jwks_issuer="https://login.microsoftonline.com",
-            jwks_access_token_name="azure_access_token",
-            webhook_verification=False,
-            verify_identity=False,
+            OAuthCallbackConfig(
+                provider_name="oauth_azure",
+                client_secret=AZURE_SECRET,
+                token_request_url=None,
+                issuer_url=(
+                    "https://login.microsoftonline.com/{tenantid}/v2.0"
+                ),
+                expected_identity_issuer=("https://login.microsoftonline.com"),
+                discovery_url=(
+                    "https://login.microsoftonline.com/common/v2.0/"
+                    ".well-known/openid-configuration"
+                ),
+                discovery_document=AZURE_DISCOVERY_DOCUMENT,
+                jwks_url=(
+                    "https://login.microsoftonline.com/common/discovery/"
+                    "v2.0/keys"
+                ),
+                jwks_token_url=(
+                    "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+                ),
+                jwks_issuer="https://login.microsoftonline.com",
+                jwks_access_token_name="azure_access_token",
+                webhook_verification=False,
+                verify_identity=False,
+            )
         )
 
     async def test_oauth_apple_flow(self):
@@ -602,18 +647,22 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_apple",
-            client_secret=APPLE_SECRET,
-            token_request_url=None,
-            issuer_url="https://appleid.apple.com",
-            discovery_url="https://appleid.apple.com/.well-known/openid-configuration",
-            discovery_document=APPLE_DISCOVERY_DOCUMENT,
-            jwks_url="https://appleid.apple.com/auth/keys",
-            jwks_token_url="https://appleid.apple.com/auth/token",
-            jwks_issuer="https://appleid.apple.com",
-            jwks_access_token_name="apple_access_token",
-            callback_method="POST",
-            webhook_verification=False,
+            OAuthCallbackConfig(
+                provider_name="oauth_apple",
+                client_secret=APPLE_SECRET,
+                token_request_url=None,
+                issuer_url="https://appleid.apple.com",
+                discovery_url=(
+                    "https://appleid.apple.com/.well-known/openid-configuration"
+                ),
+                discovery_document=APPLE_DISCOVERY_DOCUMENT,
+                jwks_url="https://appleid.apple.com/auth/keys",
+                jwks_token_url="https://appleid.apple.com/auth/token",
+                jwks_issuer="https://appleid.apple.com",
+                jwks_access_token_name="apple_access_token",
+                callback_method="POST",
+                webhook_verification=False,
+            )
         )
 
     async def test_oauth_slack_flow(self):
@@ -627,17 +676,21 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "oauth_slack",
-            client_secret=SLACK_SECRET,
-            token_request_url=None,
-            issuer_url="https://slack.com",
-            discovery_url="https://slack.com/.well-known/openid-configuration",
-            discovery_document=SLACK_DISCOVERY_DOCUMENT,
-            jwks_url="https://slack.com/openid/connect/keys",
-            jwks_token_url="https://slack.com/api/openid.connect.token",
-            jwks_issuer="https://slack.com",
-            jwks_access_token_name="slack_access_token",
-            webhook_verification=False,
+            OAuthCallbackConfig(
+                provider_name="oauth_slack",
+                client_secret=SLACK_SECRET,
+                token_request_url=None,
+                issuer_url="https://slack.com",
+                discovery_url=(
+                    "https://slack.com/.well-known/openid-configuration"
+                ),
+                discovery_document=SLACK_DISCOVERY_DOCUMENT,
+                jwks_url="https://slack.com/openid/connect/keys",
+                jwks_token_url=("https://slack.com/api/openid.connect.token"),
+                jwks_issuer="https://slack.com",
+                jwks_access_token_name="slack_access_token",
+                webhook_verification=False,
+            )
         )
 
     async def test_oauth_generic_oidc_flow(self):
@@ -652,18 +705,22 @@ class TestOAuth(BaseAuthTestCase):
         )
 
         await self._test_oauth_callback(
-            "generic_oidc",
-            client_secret=GENERIC_OIDC_SECRET,
-            token_request_url=None,
-            issuer_url="https://example.com",
-            discovery_url="https://example.com/.well-known/openid-configuration",
-            discovery_document=GENERIC_OIDC_DISCOVERY_DOCUMENT,
-            jwks_url="https://example.com/jwks",
-            jwks_token_url="https://example.com/token",
-            jwks_issuer="https://example.com",
-            jwks_access_token_name="oidc_access_token",
-            webhook_verification=False,
-            is_builtin=False,
+            OAuthCallbackConfig(
+                provider_name="generic_oidc",
+                client_secret=GENERIC_OIDC_SECRET,
+                token_request_url=None,
+                issuer_url="https://example.com",
+                discovery_url=(
+                    "https://example.com/.well-known/openid-configuration"
+                ),
+                discovery_document=GENERIC_OIDC_DISCOVERY_DOCUMENT,
+                jwks_url="https://example.com/jwks",
+                jwks_token_url="https://example.com/token",
+                jwks_issuer="https://example.com",
+                jwks_access_token_name="oidc_access_token",
+                webhook_verification=False,
+                is_builtin=False,
+            )
         )
 
     async def test_oauth_callback_missing_provider(self):
