@@ -116,9 +116,7 @@ class TestCore(BaseAuthTestCase):
                     http_con,
                     {
                         "code": pkce.id,
-                        "code_verifier": base64.urlsafe_b64encode(
-                            os.urandom(43)
-                        )
+                        "verifier": base64.urlsafe_b64encode(os.urandom(43))
                         .rstrip(b"=")
                         .decode(),
                     },
