@@ -38,24 +38,32 @@ class TestEmailPassword(BaseAuthTestCase):
         # 1. Basic Registration (form_01 logic)
         base_url = self.mock_net_server.get_base_url().rstrip("/")
         url = f"{base_url}/webhook-email-01"
-        await self.con.query(
-            """
-            CONFIGURE CURRENT DATABASE
-            INSERT ext::auth::WebhookConfig {
-                url := <str>$url,
-                events := {
-                    ext::auth::WebhookEvent.IdentityCreated,
-                    ext::auth::WebhookEvent.EmailFactorCreated,
-                    ext::auth::WebhookEvent.EmailVerificationRequested,
-                },
-            };
-            """,
-            url=url,
-        )
         webhook_request = ("POST", base_url, "/webhook-email-01")
-        await self._wait_for_db_config("ext::auth::AuthConfig::webhooks")
-
-        try:
+        async with self.temporary_config(
+            (
+                """
+                CONFIGURE CURRENT DATABASE
+                INSERT ext::auth::WebhookConfig {
+                    url := <str>$url,
+                    events := {
+                        ext::auth::WebhookEvent.IdentityCreated,
+                        ext::auth::WebhookEvent.EmailFactorCreated,
+                        ext::auth::WebhookEvent.EmailVerificationRequested,
+                    },
+                };
+                """,
+                {"url": url},
+            ),
+            (
+                """
+                CONFIGURE CURRENT DATABASE
+                RESET ext::auth::WebhookConfig
+                filter .url = <str>$url;
+                """,
+                {"url": url},
+            ),
+            "ext::auth::AuthConfig::webhooks",
+        ):
             with self.http_con() as http_con:
                 self.mock_net_server.register_route_handler(*webhook_request)(
                     ("", 204)
@@ -131,16 +139,6 @@ class TestEmailPassword(BaseAuthTestCase):
                     )
                     self.assertEqual(status, 400)
 
-        finally:
-            await self.con.query(
-                """
-                CONFIGURE CURRENT DATABASE
-                RESET ext::auth::WebhookConfig
-                filter .url = <str>$url;
-                """,
-                url=url,
-            )
-
     async def test_register_validation(self):
         with self.http_con() as http_con:
             # Missing Provider
@@ -193,20 +191,16 @@ class TestEmailPassword(BaseAuthTestCase):
             self.assertEqual(status, 400)
 
     async def test_register_no_smtp(self):
-        await self.con.query(
-            "CONFIGURE CURRENT DATABASE RESET current_email_provider_name;"
-        )
-        await self._wait_for_db_config(
-            "cfg::current_email_provider_name", is_reset=True
-        )
-        try:
-            status, _ = self._register_user(f"{uuid.uuid4()}@example.com")
-            self.assertEqual(status, 201)
-        finally:
-            await self.con.query(
+        async with self.temporary_config(
+            "CONFIGURE CURRENT DATABASE RESET current_email_provider_name;",
+            (
                 "CONFIGURE CURRENT DATABASE "
                 'SET current_email_provider_name := "email_hosting_is_easy";'
-            )
+            ),
+            "current_email_provider_name",
+        ):
+            status, _ = self._register_user(f"{uuid.uuid4()}@example.com")
+            self.assertEqual(status, 201)
 
     async def test_authenticate(self):
         email = f"{uuid.uuid4()}@example.com"
@@ -450,113 +444,119 @@ class TestEmailPassword(BaseAuthTestCase):
 
         base_url = self.mock_net_server.get_base_url().rstrip("/")
         url = f"{base_url}/otc-webhook-validation"
-        await self.con.query(
-            """
-            CONFIGURE CURRENT DATABASE
-            INSERT ext::auth::WebhookConfig {
-                url := <str>$url,
-                events := {
-                    ext::auth::WebhookEvent.OneTimeCodeRequested,
-                    ext::auth::WebhookEvent.OneTimeCodeVerified,
-                },
-            };
-            """,
-            url=url,
-        )
         webhook_request = ("POST", base_url, "/otc-webhook-validation")
-        self.mock_net_server.register_route_handler(*webhook_request)(("", 204))
-        await self._wait_for_db_config("ext::auth::AuthConfig::webhooks")
-
-        try:
-            email = f"{uuid.uuid4()}@example.com"
-            self._register_user(email, "password")
-
-            with self.http_con() as http_con:
-                # 1. Wrong Code
-                verify_data = {
-                    "provider": "builtin::local_emailpassword",
-                    "email": email,
-                    "code": "000000",
-                }
-                body, _, status = self.http_con_request(
-                    http_con,
-                    None,
-                    path="verify",
-                    method="POST",
-                    body=urllib.parse.urlencode(verify_data).encode(),
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded"
-                    },
-                )
-                self.assertEqual(status, 400)
-                self.assertIn("error", json.loads(body))
-
-                # Verify webhooks: OneTimeCodeRequested sent, but NOT
-                # OneTimeCodeVerified
-                async for tr in self.try_until_succeeds(
-                    delay=2, timeout=120, ignore=(KeyError, AssertionError)
-                ):
-                    async with tr:
-                        requests = self.mock_net_server.requests[
-                            webhook_request
-                        ]
-                        self.assertEqual(len(requests), 1)
-                        self.assertEqual(
-                            json.loads(requests[0].body)["event_type"],
-                            "OneTimeCodeRequested",
-                        )
-
-            # 2. Expired Code
-            email_expired = f"{uuid.uuid4()}@example.com"
-            self._register_user(email_expired, "password")
-
-            # Manually expire the code in DB
-            await self.con.query(
+        async with self.temporary_config(
+            (
                 """
-                UPDATE ext::auth::OneTimeCode
-                FILTER .factor[is ext::auth::EmailFactor].email = <str>$email
-                SET { expires_at := <datetime>$expired }
-            """,
-                email=email_expired,
-                expired=utcnow() - datetime.timedelta(minutes=5),
-            )
-
-            with self.http_con() as http_con:
-                verify_data = {
-                    "provider": "builtin::local_emailpassword",
-                    "email": email_expired,
-                    "code": "123456",  # Dummy code
-                }
-                # Let's get the code first
-                _, code = self._verify_email_file(email_expired)
-                verify_data["code"] = code
-
-                body, _, status = self.http_con_request(
-                    http_con,
-                    None,
-                    path="verify",
-                    method="POST",
-                    body=urllib.parse.urlencode(verify_data).encode(),
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded"
+                CONFIGURE CURRENT DATABASE
+                INSERT ext::auth::WebhookConfig {
+                    url := <str>$url,
+                    events := {
+                        ext::auth::WebhookEvent.OneTimeCodeRequested,
+                        ext::auth::WebhookEvent.OneTimeCodeVerified,
                     },
-                )
-                self.assertEqual(status, 400)
-                self.assertIn("expired", json.loads(body)["error"].lower())
-
-        finally:
-            await self.con.query(
+                };
+                """,
+                {"url": url},
+            ),
+            (
                 """
                 CONFIGURE CURRENT DATABASE
                 RESET ext::auth::WebhookConfig
                 filter .url = <str>$url;
-
-                CONFIGURE CURRENT DATABASE
-                RESET ext::auth::EmailPasswordProviderConfig;
-                CONFIGURE CURRENT DATABASE
-                INSERT ext::auth::EmailPasswordProviderConfig {
-                    require_verification := false,
-                };
-            """,
-                url=url,
+                """,
+                {"url": url},
+            ),
+            "ext::auth::AuthConfig::webhooks",
+        ):
+            self.mock_net_server.register_route_handler(*webhook_request)(
+                ("", 204)
             )
+            try:
+                email = f"{uuid.uuid4()}@example.com"
+                self._register_user(email, "password")
+
+                with self.http_con() as http_con:
+                    # 1. Wrong Code
+                    verify_data = {
+                        "provider": "builtin::local_emailpassword",
+                        "email": email,
+                        "code": "000000",
+                    }
+                    body, _, status = self.http_con_request(
+                        http_con,
+                        None,
+                        path="verify",
+                        method="POST",
+                        body=urllib.parse.urlencode(verify_data).encode(),
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded"
+                        },
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertIn("error", json.loads(body))
+
+                    # Verify webhooks: OneTimeCodeRequested sent, but NOT
+                    # OneTimeCodeVerified
+                    async for tr in self.try_until_succeeds(
+                        delay=2, timeout=120, ignore=(KeyError, AssertionError)
+                    ):
+                        async with tr:
+                            requests = self.mock_net_server.requests[
+                                webhook_request
+                            ]
+                            self.assertEqual(len(requests), 1)
+                            self.assertEqual(
+                                json.loads(requests[0].body)["event_type"],
+                                "OneTimeCodeRequested",
+                            )
+
+                # 2. Expired Code
+                email_expired = f"{uuid.uuid4()}@example.com"
+                self._register_user(email_expired, "password")
+
+                # Manually expire the code in DB
+                await self.con.query(
+                    """
+                    UPDATE ext::auth::OneTimeCode
+                    FILTER .factor[is ext::auth::EmailFactor]
+                        .email = <str>$email
+                    SET { expires_at := <datetime>$expired }
+                    """,
+                    email=email_expired,
+                    expired=utcnow() - datetime.timedelta(minutes=5),
+                )
+
+                with self.http_con() as http_con:
+                    verify_data = {
+                        "provider": "builtin::local_emailpassword",
+                        "email": email_expired,
+                        "code": "123456",  # Dummy code
+                    }
+                    # Let's get the code first
+                    _, code = self._verify_email_file(email_expired)
+                    verify_data["code"] = code
+
+                    body, _, status = self.http_con_request(
+                        http_con,
+                        None,
+                        path="verify",
+                        method="POST",
+                        body=urllib.parse.urlencode(verify_data).encode(),
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded"
+                        },
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertIn("expired", json.loads(body)["error"].lower())
+            finally:
+                await self.con.query(
+                    """
+                    CONFIGURE CURRENT DATABASE
+                    RESET ext::auth::EmailPasswordProviderConfig;
+                    CONFIGURE CURRENT DATABASE
+                    INSERT ext::auth::EmailPasswordProviderConfig {
+                        require_verification := false,
+                    };
+                """
+                )

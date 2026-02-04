@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -194,100 +195,121 @@ class TestOAuth(BaseAuthTestCase):
         base_url = self.mock_net_server.get_base_url().rstrip("/")
         webhook_url = f"{base_url}/webhook-01"
 
-        if webhook_verification:
-            await self.con.query(
-                """
-                CONFIGURE CURRENT DATABASE
-                INSERT ext::auth::WebhookConfig {
-                    url := <str>$url,
-                    events := {
-                        ext::auth::WebhookEvent.IdentityCreated,
-                    },
-                };
-                """,
-                url=webhook_url,
-            )
-            webhook_request = (
-                "POST",
-                base_url,
-                "/webhook-01",
-            )
-            self.mock_net_server.register_route_handler(*webhook_request)(
-                (
-                    "",
-                    204,
+        async with contextlib.AsyncExitStack() as stack:
+            webhook_request = None
+            if webhook_verification:
+                await stack.enter_async_context(
+                    self.temporary_config(
+                        (
+                            """
+                            CONFIGURE CURRENT DATABASE
+                            INSERT ext::auth::WebhookConfig {
+                                url := <str>$url,
+                                events := {
+                                    ext::auth::WebhookEvent.IdentityCreated,
+                                },
+                            };
+                            """,
+                            {"url": webhook_url},
+                        ),
+                        (
+                            """
+                            CONFIGURE CURRENT DATABASE
+                            RESET ext::auth::WebhookConfig
+                            filter .url = <str>$url;
+                            """,
+                            {"url": webhook_url},
+                        ),
+                        "ext::auth::AuthConfig::webhooks",
+                    )
                 )
-            )
-
-        if is_builtin:
-            provider_config = await self.get_builtin_provider_config_by_name(
-                provider_name
-            )
-        else:
-            provider_config = await self.get_provider_config_by_name(
-                provider_name
-            )
-
-        p_name = provider_config.name
-        client_id = provider_config.client_id
-
-        # Setup Discovery
-        if discovery_url and discovery_document:
-            parts = discovery_url.split("/", 3)
-            host = parts[0] + "//" + parts[2]
-            path = parts[3] if len(parts) > 3 else ""
-            discovery_req_key = ("GET", host, path)
-            self.mock_oauth_server.register_route_handler(*discovery_req_key)(
-                (
-                    json.dumps(discovery_document),
-                    200,
-                    {"cache-control": "max-age=3600"},
+                webhook_request = (
+                    "POST",
+                    base_url,
+                    "/webhook-01",
                 )
-            )
-
-        # Setup Token Response
-        token_request = None
-        if jwks_url:
-            # Use helper for JWK based token response (ID Token)
-            token_request = self.generate_and_serve_jwk(
-                client_id,
-                jwks_url,
-                jwks_token_url,
-                jwks_issuer,
-                jwks_access_token_name,
-            )
-        else:
-            # Standard manual token response
-            parts = token_request_url.split("/", 3)
-            host = parts[0] + "//" + parts[2]
-            path = parts[3] if len(parts) > 3 else ""
-            token_request = ("POST", host, path)
-
-            self.mock_oauth_server.register_route_handler(*token_request)(
-                (
-                    json.dumps(token_response_body),
-                    200,
+                self.mock_net_server.register_route_handler(*webhook_request)(
+                    (
+                        "",
+                        204,
+                    )
                 )
-            )
 
-        # Setup User Info Response
-        user_request = None
-        if user_info_request_url and user_info_response_body:
-            parts = user_info_request_url.split("/", 3)
-            host = parts[0] + "//" + parts[2]
-            path = parts[3] if len(parts) > 3 else ""
-            user_request = ("GET", host, path)
-            self.mock_oauth_server.register_route_handler(*user_request)(
-                (
-                    json.dumps(user_info_response_body),
-                    200,
+            if is_builtin:
+                provider_config = (
+                    await self.get_builtin_provider_config_by_name(
+                        provider_name
+                    )
                 )
-            )
+            else:
+                provider_config = await self.get_provider_config_by_name(
+                    provider_name
+                )
 
-        if webhook_verification:
-            await self._wait_for_db_config("ext::auth::AuthConfig::webhooks")
+            p_name = provider_config.name
+            client_id = provider_config.client_id
 
-        try:
+            # Setup Discovery
+            if discovery_url and discovery_document:
+                parts = discovery_url.split("/", 3)
+                host = parts[0] + "//" + parts[2]
+                path = parts[3] if len(parts) > 3 else ""
+                discovery_req_key = ("GET", host, path)
+                self.mock_oauth_server.register_route_handler(
+                    *discovery_req_key
+                )(
+                    (
+                        json.dumps(discovery_document),
+                        200,
+                        {"cache-control": "max-age=3600"},
+                    )
+                )
+
+            # Setup Token Response
+            token_request = None
+            if jwks_url:
+                assert jwks_token_url is not None
+                assert jwks_issuer is not None
+                # Use helper for JWK based token response (ID Token)
+                token_request = self.generate_and_serve_jwk(
+                    client_id,
+                    jwks_url,
+                    jwks_token_url,
+                    jwks_issuer,
+                    jwks_access_token_name,
+                )
+            else:
+                assert token_request_url is not None
+                assert token_response_body is not None
+                # Standard manual token response
+                parts = token_request_url.split("/", 3)
+                host = parts[0] + "//" + parts[2]
+                path = parts[3] if len(parts) > 3 else ""
+                token_request = ("POST", host, path)
+
+                self.mock_oauth_server.register_route_handler(*token_request)(
+                    (
+                        json.dumps(token_response_body),
+                        200,
+                    )
+                )
+
+            assert token_request is not None
+
+            # Setup User Info Response
+            user_request = None
+            if user_info_request_url and user_info_response_body:
+                parts = user_info_request_url.split("/", 3)
+                host = parts[0] + "//" + parts[2]
+                path = parts[3] if len(parts) > 3 else ""
+                user_request = ("GET", host, path)
+                self.mock_oauth_server.register_route_handler(*user_request)(
+                    (
+                        json.dumps(user_info_response_body),
+                        200,
+                    )
+                )
+
             with self.http_con() as http_con:
                 challenge = (
                     base64.urlsafe_b64encode(
@@ -317,16 +339,17 @@ class TestOAuth(BaseAuthTestCase):
                 )
                 state_token = state_claims.sign(self.signing_key())
 
-                request_body = None
-                request_kwargs = {}
-                request_params = None
+                request_body: bytes = b""
+                request_headers: Optional[dict[str, str]] = None
+                request_method = "GET"
+                request_params: Optional[dict[str, str]] = None
 
                 if callback_method == "POST":
-                    request_kwargs["method"] = "POST"
+                    request_method = "POST"
                     request_body = urllib.parse.urlencode(
                         {"state": state_token, "code": "abc123"}
                     ).encode()
-                    request_kwargs["headers"] = {
+                    request_headers = {
                         "Content-Type": "application/x-www-form-urlencoded"
                     }
                 else:
@@ -336,8 +359,9 @@ class TestOAuth(BaseAuthTestCase):
                     http_con,
                     request_params,  # params (2nd arg)
                     path="callback",
-                    body=request_body or b"",  # body kwarg
-                    **request_kwargs,
+                    method=request_method,
+                    body=request_body,
+                    headers=request_headers,
                 )
 
                 self.assertEqual(data, b"")
@@ -395,6 +419,7 @@ class TestOAuth(BaseAuthTestCase):
 
                 if verify_identity:
                     if user_request:
+                        assert user_info_response_body is not None
                         requests_for_user = self.mock_oauth_server.requests[
                             user_request
                         ]
@@ -419,22 +444,23 @@ class TestOAuth(BaseAuthTestCase):
                     self.assertEqual(len(identity), 1)
 
                     if webhook_verification:
+                        assert webhook_request is not None
                         # Test Webhook side effect
                         async for tr in self.try_until_succeeds(
                             delay=2,
                             timeout=15,
-                            ignore=(KeyError, AssertionError),
+                            ignore=AssertionError,
                         ):
                             async with tr:
                                 requests_for_webhook = (
-                                    self.mock_net_server.requests[
-                                        webhook_request
-                                    ]
+                                    self.mock_net_server.requests.get(
+                                        webhook_request, []
+                                    )
                                 )
                                 self.assertEqual(len(requests_for_webhook), 1)
 
                         body = requests_for_webhook[0].body
-                        self.assertIsNotNone(body)
+                        assert body is not None
                         event_data = json.loads(body)
                         self.assertEqual(
                             event_data["event_type"], "IdentityCreated"
@@ -478,8 +504,9 @@ class TestOAuth(BaseAuthTestCase):
                         http_con,
                         request_params,
                         path="callback",
-                        body=request_body or b"",
-                        **request_kwargs,
+                        method=request_method,
+                        body=request_body,
+                        headers=request_headers,
                     )
 
                     same_identity = await self.con.query(
@@ -493,17 +520,6 @@ class TestOAuth(BaseAuthTestCase):
                     )
                     self.assertEqual(len(same_identity), 1)
                     self.assertEqual(identity[0].id, same_identity[0].id)
-
-        finally:
-            if webhook_verification:
-                await self.con.query(
-                    """
-                    CONFIGURE CURRENT DATABASE
-                    RESET ext::auth::WebhookConfig
-                    filter .url = <str>$url;
-                    """,
-                    url=webhook_url,
-                )
 
     async def test_oauth_github_flow(self):
         await self._test_oauth_authorize(

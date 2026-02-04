@@ -17,6 +17,7 @@
 #
 
 
+import contextlib
 import contextvars
 import uuid
 import json
@@ -437,6 +438,29 @@ class BaseAuthTestCase(tb.ExtAuthTestCase):
                 headers = {}
             headers['x-edgedb-oauth-test-server'] = test_port
         return super().http_con_send_request(*args, headers=headers, **kwargs)
+
+    def _config_query_is_reset(self, query):
+        text = query[0] if isinstance(query, tuple) else query
+        return re.search(r"\breset\b", text, re.IGNORECASE) is not None
+
+    async def _apply_config_query(self, query, wait_for: str) -> None:
+        if isinstance(query, tuple):
+            query_text, query_args = query
+            await self.con.query(query_text, **query_args)
+        else:
+            await self.con.query(query)
+        await self._wait_for_db_config(
+            wait_for,
+            is_reset=self._config_query_is_reset(query),
+        )
+
+    @contextlib.asynccontextmanager
+    async def temporary_config(self, set_query, reset_query, wait_for: str):
+        await self._apply_config_query(set_query, wait_for)
+        try:
+            yield
+        finally:
+            await self._apply_config_query(reset_query, wait_for)
 
     async def get_provider_config_by_name(self, fqn: str):
         return await self.con.query_required_single(

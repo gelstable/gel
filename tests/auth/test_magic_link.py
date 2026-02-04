@@ -353,76 +353,74 @@ class TestMagicLink(BaseAuthTestCase):
         )
         base_url = self.mock_net_server.get_base_url().rstrip("/")
         webhook_url = f"{base_url}/auto-signup-webhook"
-        await self.con.query(
-            """
-            CONFIGURE CURRENT DATABASE
-            INSERT ext::auth::WebhookConfig {
-                url := <str>$url,
-                events := {
-                    ext::auth::WebhookEvent.IdentityCreated,
-                    ext::auth::WebhookEvent.EmailFactorCreated,
-                    ext::auth::WebhookEvent.MagicLinkRequested,
-                },
-            };
-            """,
-            url=webhook_url,
-        )
         webhook_request = ("POST", base_url, "/auto-signup-webhook")
         self.mock_net_server.register_route_handler(*webhook_request)(("", 204))
-        await self._wait_for_db_config("ext::auth::AuthConfig::webhooks")
-
         try:
-            email = f"{uuid.uuid4()}@example.com"
-            challenge = "test_auto_signup_challenge"
-            callback_url = "https://example.com/app/auth/callback"
-            redirect_on_failure = (
-                "https://example.com/app/auth/magic-link-failure"
-            )
-
-            with self.http_con() as http_con:
-                # Request magic link for non-existent user
-                body, _, status = self.http_con_request(
-                    http_con,
-                    method="POST",
-                    path="magic-link/email",
-                    body=json.dumps(
-                        {
-                            "provider": "builtin::local_magic_link",
-                            "email": email,
-                            "challenge": challenge,
-                            "callback_url": callback_url,
-                            "redirect_on_failure": redirect_on_failure,
-                        }
-                    ).encode(),
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
+            async with self.temporary_config(
+                (
+                    """
+                    CONFIGURE CURRENT DATABASE
+                    INSERT ext::auth::WebhookConfig {
+                        url := <str>$url,
+                        events := {
+                            ext::auth::WebhookEvent.IdentityCreated,
+                            ext::auth::WebhookEvent.EmailFactorCreated,
+                            ext::auth::WebhookEvent.MagicLinkRequested,
+                        },
+                    };
+                    """,
+                    {"url": webhook_url},
+                ),
+                "CONFIGURE CURRENT DATABASE RESET ext::auth::WebhookConfig",
+                "ext::auth::AuthConfig::webhooks",
+            ):
+                email = f"{uuid.uuid4()}@example.com"
+                challenge = "test_auto_signup_challenge"
+                callback_url = "https://example.com/app/auth/callback"
+                redirect_on_failure = (
+                    "https://example.com/app/auth/magic-link-failure"
                 )
 
-                self.assertEqual(status, 200, body)
-                response_data = json.loads(body)
-                self.assertEqual(response_data.get("email_sent"), email)
-                self.assertEqual(response_data.get("signup"), "true")
+                with self.http_con() as http_con:
+                    # Request magic link for non-existent user
+                    body, _, status = self.http_con_request(
+                        http_con,
+                        method="POST",
+                        path="magic-link/email",
+                        body=json.dumps(
+                            {
+                                "provider": "builtin::local_magic_link",
+                                "email": email,
+                                "challenge": challenge,
+                                "callback_url": callback_url,
+                                "redirect_on_failure": redirect_on_failure,
+                            }
+                        ).encode(),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                    )
 
-                # Check Email
-                link, _ = self._verify_email_file(email)
-                self.assertIsNotNone(link)
+                    self.assertEqual(status, 200, body)
+                    response_data = json.loads(body)
+                    self.assertEqual(response_data.get("email_sent"), email)
+                    self.assertEqual(response_data.get("signup"), "true")
 
-                # Verify Webhooks
-                async for tr in self.try_until_succeeds(
-                    delay=2, timeout=120, ignore=(KeyError, AssertionError)
-                ):
-                    async with tr:
-                        requests = self.mock_net_server.requests[
-                            webhook_request
-                        ]
-                        self.assertEqual(len(requests), 3)
+                    # Check Email
+                    link, _ = self._verify_email_file(email)
+                    self.assertIsNotNone(link)
 
+                    # Verify Webhooks
+                    async for tr in self.try_until_succeeds(
+                        delay=2, timeout=120, ignore=(KeyError, AssertionError)
+                    ):
+                        async with tr:
+                            requests = self.mock_net_server.requests[
+                                webhook_request
+                            ]
+                            self.assertEqual(len(requests), 3)
         finally:
-            await self.con.query(
-                "CONFIGURE CURRENT DATABASE RESET ext::auth::WebhookConfig"
-            )
             await self.con.query(
                 """
                 CONFIGURE CURRENT DATABASE

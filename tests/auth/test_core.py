@@ -42,23 +42,32 @@ class TestCore(BaseAuthTestCase):
         )
         url = f"{webhook_request[1]}/{webhook_request[2]}"
         signing_secret_key = str(uuid.uuid4())
-        await self.con.query(
-            f"""
-            CONFIGURE CURRENT DATABASE
-            INSERT ext::auth::WebhookConfig {{
-                url := <str>$url,
-                events := {{
-                    ext::auth::WebhookEvent.IdentityAuthenticated,
-                }},
-                signing_secret_key := <str>$signing_secret_key,
-            }};
-            """,
-            url=url,
-            signing_secret_key=signing_secret_key,
-        )
-        await self._wait_for_db_config("ext::auth::AuthConfig::webhooks")
-
-        try:
+        async with self.temporary_config(
+            (
+                f"""
+                CONFIGURE CURRENT DATABASE
+                INSERT ext::auth::WebhookConfig {{
+                    url := <str>$url,
+                    events := {{
+                        ext::auth::WebhookEvent.IdentityAuthenticated,
+                    }},
+                    signing_secret_key := <str>$signing_secret_key,
+                }};
+                """,
+                {
+                    "url": url,
+                    "signing_secret_key": signing_secret_key,
+                },
+            ),
+            (
+                """
+                CONFIGURE CURRENT DATABASE
+                RESET ext::auth::WebhookConfig filter .url = <str>$url;
+                """,
+                {"url": url},
+            ),
+            "ext::auth::AuthConfig::webhooks",
+        ):
             with self.http_con() as http_con:
                 self.mock_net_server.register_route_handler(*webhook_request)(
                     (
@@ -280,14 +289,6 @@ class TestCore(BaseAuthTestCase):
                 )
 
                 self.assertEqual(replay_attack_status, 403)
-        finally:
-            await self.con.query(
-                f"""
-                CONFIGURE CURRENT DATABASE
-                RESET ext::auth::WebhookConfig filter .url = <str>$url;
-                """,
-                url=url,
-            )
 
     async def test_pkce_token_validation(self):
         # Covers test_http_auth_ext_token_02 and 03
