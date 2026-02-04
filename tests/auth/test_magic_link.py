@@ -232,6 +232,9 @@ class TestMagicLink(BaseAuthTestCase):
 
                 # Should NOT send email for non-existent user (unless
                 # auto-signup is on, which is default false)
+                link, code = self._verify_email_file(nonexistent_email)
+                self.assertIsNone(link)
+                self.assertIsNone(code)
 
         finally:
             await self.con.query(
