@@ -290,6 +290,14 @@ def _coverage_wrapper(paths):
             shutil.copy(covfile, '.')
 
 
+def _get_repo_root() -> str:
+    here = pathlib.Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / '.git').exists():
+            return str(parent)
+    return str(here.parents[3])
+
+
 def _run(
     *,
     include: typing.Sequence[str],
@@ -342,17 +350,36 @@ def _run(
         progress_cb=_update_progress,
     )
 
+    repo_root = _get_repo_root()
+
     for file in files:
         if not os.path.exists(file) and verbosity > 0:
             click.echo(styles.warning(
                 f'Warning: {file}: no such file or directory.'))
 
         if os.path.isdir(file):
-            tests = test_loader.discover(file)
+            start_dir = file
+            pattern: typing.Optional[str] = None
+        else:
+            start_dir = os.path.dirname(file) or '.'
+            pattern = os.path.basename(file)
+
+        if os.path.isfile(os.path.join(start_dir, '__init__.py')):
+            top_level_dir = repo_root
+        else:
+            top_level_dir = None
+
+        if pattern is None:
+            tests = test_loader.discover(
+                start_dir,
+                top_level_dir=top_level_dir,
+            )
         else:
             tests = test_loader.discover(
-                os.path.dirname(file),
-                pattern=os.path.basename(file))
+                start_dir,
+                pattern=pattern,
+                top_level_dir=top_level_dir,
+            )
 
         suite.addTest(tests)
 
