@@ -197,9 +197,9 @@ PRs are always welcome! To get started, follow
 [this guide](https://docs.geldata.com/resources/guides/contributing) to build Gel from
 source on your local machine.
 
-[File an issue 👉](https://github.com/geldata/gel/issues/new/choose)
+[File an issue 👉](https://github.com/gelstable/gel/issues/new/choose)
 <br />
-[Start a Discussion 👉](https://github.com/geldata/gel/discussions/new)
+[Start a Discussion 👉](https://github.com/gelstable/gel/discussions/new)
 <br />
 [Join the discord 👉](https://discord.gg/gel)
 
