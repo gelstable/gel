@@ -143,9 +143,8 @@ a full-fledged database with a
 [powerful and elegant query language](https://docs.geldata.com/reference/edgeql), a
 [migrations system](https://docs.geldata.com/learn/migrations), a
 [suite of client libraries](https://docs.geldata.com/reference/clients) in
-different languages, a
-[command line tool](https://docs.geldata.com/learn/cli), and a managed
-[cloud service](https://geldata.com/cloud).
+different languages and a
+[command line tool](https://docs.geldata.com/learn/cli)
 The goal is to rethink every aspect of how developers model, migrate,
 manage, and query their database.
 
@@ -175,8 +174,6 @@ To start learning about Gel, check out the following resources:
 - **[The quickstart](https://docs.geldata.com/learn/quickstart/overview/nextjs)**. If
   you're just starting out, the 10-minute quickstart guide is the fastest way
   to get up and running.
-- **[Gel Cloud 🌤️](https://www.geldata.com/cloud)**. The best
-  most effortless way to host your Gel database in the cloud.
 <!--- **[The interactive tutorial](https://www.geldata.com/tutorial)**. For a
   structured deep-dive into the EdgeQL query language, try the web-based
   tutorial— no need to install anything.
