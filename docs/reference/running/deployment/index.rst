@@ -15,7 +15,8 @@ running Gel `in Docker <https://github.com/geldata/gel-docker>`_.
     with insufficient RAM may experience unexpected issues during startup.
 
     When using an external PostgreSQL instance Gel must connect with the
-    PostgreSQL superuser.
+    PostgreSQL superuser. The external PostgreSQL instance should run 
+    Postgres 17.
 
 .. toctree::
     :maxdepth: 1
