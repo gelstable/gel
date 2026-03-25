@@ -955,6 +955,7 @@ PG_CATALOG: dict[str, list[tuple[ColumnName, ColumnType, int]]] = {
         ("relpages", "integer", 13),
         ("reltuples", "real", 13),
         ("relallvisible", "integer", 13),
+        ("relallfrozen", "integer", 18),
         ("reltoastrelid", "oid", 13),
         ("relhasindex", "boolean", 13),
         ("relisshared", "boolean", 13),
