@@ -7224,7 +7224,7 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_class_tables"),
             materialized=True,
-            query="""
+            query=f"""
         -- Postgres tables
         SELECT pc.*
         FROM pg_class pc
@@ -7247,6 +7247,7 @@ def _generate_sql_information_schema(
             relpages,
             reltuples,
             relallvisible,
+            {'relallfrozen,' if backend_version.major >= 18 else ''}
             reltoastrelid,
             relhasindex,
             relisshared,
@@ -7333,7 +7334,7 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_class_"),
             materialized=True,
-            query="""
+            query=f"""
         -- tables
         SELECT pc.*
         FROM edgedbsql_VER.pg_class_tables pc
@@ -7361,6 +7362,7 @@ def _generate_sql_information_schema(
             pc.relpages,
             pc.reltuples,
             pc.relallvisible,
+            {'pc.relallfrozen,' if backend_version.major >= 18 else ''}
             pc.reltoastrelid,
             pc.relhasindex,
             pc.relisshared,
@@ -7402,7 +7404,7 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_attribute_ext"),
             materialized=True,
-            query=r"""
+            query=f"""
         SELECT attrelid,
             attname,
             atttypid,
@@ -7411,7 +7413,7 @@ def _generate_sql_information_schema(
             attnum,
             attnum as attnum_internal,
             attndims,
-            attcacheoff,
+            {'attcacheoff,' if backend_version.major < 18 else ''}
             atttypmod,
             attbyval,
             attstorage,
@@ -7451,7 +7453,7 @@ def _generate_sql_information_schema(
             ) - 6)::smallint AS attnum,
             t.attnum as attnum_internal,
             COALESCE(attndims, 0) as attndims,
-            COALESCE(attcacheoff, -1) as attcacheoff,
+            {'COALESCE(attcacheoff, -1) as attcacheoff,' if backend_version.major < 18 else ''}
             COALESCE(atttypmod, -1) as atttypmod,
             COALESCE(attbyval, FALSE) as attbyval,
             COALESCE(attstorage, 'x') as attstorage,
@@ -7553,7 +7555,7 @@ def _generate_sql_information_schema(
         ),
         trampoline.VersionedView(
             name=("edgedbsql", "pg_attribute"),
-            query="""
+            query=f"""
         SELECT
           attrelid,
           attname,
@@ -7562,7 +7564,7 @@ def _generate_sql_information_schema(
           attlen,
           attnum,
           attndims,
-          attcacheoff,
+          {'attcacheoff,' if backend_version.major < 18 else ''}
           atttypmod,
           attbyval,
           attstorage,
