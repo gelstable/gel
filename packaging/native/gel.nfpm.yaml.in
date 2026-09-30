@@ -1,0 +1,22 @@
+name: gel-@SLOT@
+arch: '@ARCH@'
+platform: linux
+version_schema: none
+epoch: '1'
+version: '@VERSION@'
+release: '@REVISION@'
+maintainer: Gelstable <packages@gelstable.com>
+homepage: https://gelstable.com/
+license: Apache-2.0
+section: database
+priority: optional
+description: 'Gel server and client tools (portable build @IDENTITY@).'
+overrides:
+  deb:
+    depends:
+      - 'gel-server-@SLOT@ (= 1:@VERSION@-@REVISION@)'
+      - gel-cli
+  rpm:
+    depends:
+      - 'gel-server-@SLOT@ = 1:@VERSION@-@REVISION@'
+      - gel-cli

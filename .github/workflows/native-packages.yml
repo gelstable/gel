@@ -1,0 +1,145 @@
+name: Native server packages
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Published portable release tag
+        required: true
+        default: v7.1
+        type: string
+      channel:
+        description: Native repository channel
+        required: true
+        default: testing
+        type: choice
+        options: [stable, testing]
+      revision:
+        description: Native package revision (increase for repacks)
+        required: true
+        default: '1'
+        type: string
+  pull_request:
+    paths:
+      - scripts/native_packages.py
+      - packaging/native/**
+      - tests/test_native_packages.py
+      - .github/workflows/native-packages.yml
+permissions:
+  contents: read
+concurrency:
+  group: native-server-${{ github.ref }}-${{ inputs.source_tag || 'v7.1' }}-${{ inputs.revision || '1' }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            native_arch: amd64
+            rpm_arch: x86_64
+            runner: ubuntu-24.04
+            nfpm_arch: x86_64
+            nfpm_sha: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
+          - arch: aarch64
+            native_arch: arm64
+            rpm_arch: aarch64
+            runner: ubuntu-24.04-arm
+            nfpm_arch: arm64
+            nfpm_sha: 1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install pinned nFPM and tools
+        env:
+          NFPM_ARCH: ${{ matrix.nfpm_arch }}
+          NFPM_SHA: ${{ matrix.nfpm_sha }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd rpm
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_${NFPM_ARCH}.tar.gz" -o /tmp/nfpm.tar.gz
+          echo "$NFPM_SHA  /tmp/nfpm.tar.gz" | sha256sum --check
+          tar -xzf /tmp/nfpm.tar.gz -C /tmp nfpm
+          sudo install /tmp/nfpm /usr/local/bin/nfpm
+      - name: Unit tests
+        run: python3 -m unittest tests.test_native_packages
+      - name: Build from verified portable assets
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag || 'v7.1' }}
+          CHANNEL: ${{ inputs.channel || 'testing' }}
+          REVISION: ${{ inputs.revision || '1' }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 scripts/native_packages.py --source-tag "$SOURCE_TAG" --channel "$CHANNEL" --revision "$REVISION" --arch "$ARCH" --out dist/native
+          python3 scripts/native_packages.py --fetch-cli --arch "$ARCH" --out dist/cli
+      - name: Install, bootstrap, query and uninstall on Debian 12 and Rocky 9
+        env:
+          DEB_ARCH: ${{ matrix.native_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+        run: |
+          slot=$(python3 -c 'import glob,json; print(json.load(open(glob.glob("dist/native/build-info-*.json")[0]))["slot"])')
+          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" debian:12 bash /test/install-test.sh deb "$DEB_ARCH" "$slot"
+          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" rockylinux:9 bash /test/install-test.sh rpm "$RPM_ARCH" "$slot"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ matrix.arch }}
+          path: dist/native/
+          if-no-files-found: error
+  sign:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    environment: package-signing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: native-*
+          merge-multiple: true
+          path: dist/native
+      - run: sudo apt-get update && sudo apt-get install -y rpm gnupg
+      - name: Sign RPMs and verify with isolated public trust
+        env:
+          PACKAGE_SIGNING_KEY: ${{ secrets.PACKAGE_SIGNING_KEY }}
+          PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
+        run: bash packaging/native/sign-rpms.sh dist/native
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-native
+          path: dist/native/
+          if-no-files-found: error
+  release:
+    needs: sign
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: signed-native
+          path: dist/native
+      - name: Assemble final manifest and publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          tag=$(python3 scripts/native_packages.py --manifest --channel "$CHANNEL" --out dist/native)
+          # Existing releases/assets are immutable: never replace or delete them.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; increase revision" >&2
+            exit 1
+          fi
+          options=()
+          if [[ "$CHANNEL" == testing ]]; then options+=(--prerelease); fi
+          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "$tag" --notes "Native Gel server packages ($CHANNEL)." "${options[@]}"
+          gh release upload "$tag" dist/native/*.deb dist/native/*.rpm dist/native/gel-registry.json
+          python3 scripts/native_packages.py --verify-release "$tag" --out dist/native
+          gh release edit "$tag" --draft=false

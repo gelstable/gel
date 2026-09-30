@@ -1,0 +1,41 @@
+name: gel-server-@SLOT@
+arch: '@ARCH@'
+platform: linux
+version_schema: none
+epoch: '1'
+version: '@VERSION@'
+release: '@REVISION@'
+maintainer: Gelstable <packages@gelstable.com>
+homepage: https://gelstable.com/
+license: Apache-2.0
+section: database
+priority: optional
+description: 'Gel graph-relational database server (portable build @IDENTITY@).'
+conflicts:
+  - edgedb-common
+replaces:
+  - edgedb-common
+  - edgedb-server-@SLOT@
+contents:
+  - src: '${PORTABLE_TREE}/'
+    dst: /usr/lib/gel-server-@SLOT@/
+    type: tree
+    expand: true
+  - src: ../lib/gel-server-@SLOT@/bin/gel-server
+    dst: /usr/bin/gel-server-@SLOT@
+    type: symlink
+  - src: ../lib/gel-server-@SLOT@/bin/gel-server
+    dst: /usr/bin/edgedb-server-@SLOT@
+    type: symlink
+  - src: '${RENDERED_DIR}/gel-server-@SLOT@.service'
+    dst: /lib/systemd/system/gel-server-@SLOT@.service
+    expand: true
+scripts:
+  preinstall: '@RENDERED_DIR@/preinstall.sh'
+  postinstall: '@RENDERED_DIR@/postinstall.sh'
+  preremove: '@RENDERED_DIR@/preremove.sh'
+  postremove: '@RENDERED_DIR@/postremove.sh'
+overrides:
+  deb:
+    depends:
+      - libc6

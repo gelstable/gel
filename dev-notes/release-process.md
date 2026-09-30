@@ -3,9 +3,9 @@
 Deprecates release instruction from
 [RFC 2](https://github.com/edgedb/rfcs/blob/master/text/0002-edgedb-release-process.rst).
 
-EdgeDB packages are published on https://packages.edgedb.com.
-They are build in GitHub Actions pipelines, using
-https://github.com/edgedb/edgedb-pkg.
+Portable builds are produced by the GitHub Actions pipelines using gel-pkg.
+Native APT/RPM packages are built from published portable releases and served
+through https://registry.gelstable.com.
 
 Releases are built from a release branch associated with a major version
 (i.e. "release/4.x"). At feature freeze, we create this branch. From that moment
@@ -136,6 +136,31 @@ It will not publish any packages if any of the tests fail.
 
 Sometimes, tests will be flakey and just need to be re-run.
 You can do that with a button top-right.
+
+## Native APT/RPM packages
+
+After the portable GitHub release is published, run `native-packages.yml` on
+`master` with `source_tag` (for example `v7.1`), `channel` (`stable` or `testing`)
+and `revision` (initially `1`). Both glibc portable assets must have SHA256 digest
+and size fields in the GitHub API. The workflow verifies them before unpacking
+and packages the unchanged portable trees using checksum-pinned nFPM.
+
+The native runners build and install-test Debian 12/Rocky 9 packages without
+secrets. After both architectures pass, the default-branch-only
+`package-signing` Environment supplies `PACKAGE_SIGNING_KEY` and
+`PACKAGE_SIGNING_FPR`; configure its protection to permit only `master`.
+The signing job signs RPMs and verifies with only the public key trusted.
+The release job computes the v2 native-only manifest from the signed artifact,
+creates a draft `pkg-gel-<slot>-<version>-<revision>` release, uploads all eight
+packages and `gel-registry.json`, verifies the API upload digests/sizes, and
+publishes. The testing channel creates a GitHub prerelease.
+
+Published native assets are immutable. Increase the revision to repackage the
+same upstream version; never replace/delete package assets. Failed drafts are
+retained for inspection and also require a fresh revision on retry. The
+registry consumes the published manifest to update both native repositories.
+This workflow is separate from portable publication and does not change its
+archive registry/upload configuration.
 
 ## Changelog
 
