@@ -6,6 +6,28 @@ and optional `revision` (default `1`). It returns the signed packages as the
 `native-packages` Actions artifact and does not publish. The caller must run in
 a job allowed to use the `package-signing` Environment. That Environment
 supplies `PACKAGE_SIGNING_KEY` and `PACKAGE_SIGNING_FPR` to the signing job.
+The caller must forward those two named secrets even when their values exist
+only in that Environment. It must grant `contents: write` because GitHub
+validates the dispatch-only publish job's declaration before evaluating its
+condition. The reusable build/sign jobs retain `contents: read`; the caller
+path never publishes. After a job uploads the portable artifact, call:
+
+```yaml
+jobs:
+  native:
+    needs: portable
+    permissions:
+      contents: write
+    uses: ./.github/workflows/native-packages.yml
+    with:
+      portable-artifact: portable-server
+    secrets:
+      PACKAGE_SIGNING_KEY: ${{ secrets.PACKAGE_SIGNING_KEY }}
+      PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
+```
+
+`portable` is the caller's artifact-uploading job. The signing job receives the
+Environment values; no repository-level copies of the signing key are needed.
 The caller is responsible for the integrity of its portable artifact.
 
 Manual dispatch accepts `source_tag` and optional `repack`. Shared registry

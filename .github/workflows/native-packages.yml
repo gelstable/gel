@@ -3,6 +3,8 @@
 # to 1. Returns the signed native-packages Actions artifact; never publishes.
 # The caller must run in a job allowed to use the package-signing Environment
 # which supplies PACKAGE_SIGNING_KEY and PACKAGE_SIGNING_FPR to the sign job.
+# The caller must forward both named secrets and grant contents: write because
+# GitHub validates the dispatch-only publish job even when it will be skipped.
 name: Native server packages
 on:
   workflow_call:
@@ -13,6 +15,11 @@ on:
       revision:
         default: '1'
         type: string
+    secrets:
+      PACKAGE_SIGNING_KEY:
+        required: true
+      PACKAGE_SIGNING_FPR:
+        required: true
   workflow_dispatch:
     inputs:
       source_tag:
@@ -137,7 +144,7 @@ jobs:
           if-no-files-found: error
   sign:
     needs: build
-    if: github.event_name != 'pull_request'
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     environment: package-signing
     steps:
