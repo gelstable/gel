@@ -1,7 +1,4 @@
-import hashlib
 import io
-import json
-import os
 import importlib.util
 from pathlib import Path
 import shutil
@@ -9,7 +6,6 @@ import subprocess
 import tempfile
 import tarfile
 import unittest
-from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,30 +44,8 @@ class NativePackagesTests(unittest.TestCase):
                 self.assertIn('/usr/lib/gel-server-7/', server)
                 self.assertNotIn('libsystemd-dev', server)
 
-    def test_download_verification(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            source = root / 'source'
-            source.write_bytes(b'portable server')
-            asset = {
-                'browser_download_url': source.as_uri(),
-                'size': 15,
-                'digest': 'sha256:'
-                + hashlib.sha256(source.read_bytes()).hexdigest(),
-            }
-            result = self.native.fetch_asset(asset, root / 'cached')
-            self.assertEqual(result.read_bytes(), source.read_bytes())
-            for change in [
-                {'size': 14},
-                {'digest': 'sha256:' + '0' * 64},
-                {'digest': None},
-            ]:
-                with self.subTest(change=change), self.assertRaises(ValueError):
-                    self.native.fetch_asset(asset | change, root / 'bad')
-                self.assertFalse((root / 'bad').exists())
-
     @unittest.skipUnless(
-        all(shutil.which(tool) for tool in ['nfpm', 'dpkg-deb', 'rpm']),
+        all(shutil.which(tool) for tool in ['nfpm', 'dpkg-deb', 'rpm', 'zstd']),
         'Linux packaging tools required',
     )
     def test_real_package_headers_for_final_and_prerelease(self):
@@ -88,28 +62,23 @@ class NativePackagesTests(unittest.TestCase):
                 (tree / 'bin').mkdir(parents=True)
                 (tree / 'bin/gel-server').write_text('#!/bin/sh\nexit 0\n')
                 (tree / 'bin/gel-server').chmod(0o755)
-                self.native.render_configs(tree, 'x86_64', '1', out)
-                environment = os.environ | {
-                    'PORTABLE_TREE': str(tree),
-                    'RENDERED_DIR': str(out),
-                }
+                archive = out / 'portable.tar'
+                with tarfile.open(archive, 'w') as source:
+                    source.add(tree, arcname=tree.name)
+                subprocess.run(['zstd', '-q', str(archive)], check=True)
+                packages = out / 'packages'
+                metadata = self.native.build(
+                    out / 'portable.tar.zst', '3', 'x86_64', packages
+                )
+                self.assertEqual(metadata['version'], version)
+                self.assertEqual(metadata['slot'], '7')
+                self.assertEqual(len(list(packages.glob('*.deb'))), 2)
+                self.assertEqual(len(list(packages.glob('*.rpm'))), 2)
                 for family in ['gel-server', 'gel']:
-                    for format_ in ['deb', 'rpm']:
-                        package = out / f'{family}.{format_}'
-                        subprocess.run(
-                            [
-                                'nfpm',
-                                'package',
-                                '--config',
-                                str(out / f'{family}.nfpm.yaml'),
-                                '--packager',
-                                format_,
-                                '--target',
-                                str(package),
-                            ],
-                            env=environment,
-                            check=True,
-                            capture_output=True,
+                    for format_, arch in [('deb', 'amd64'), ('rpm', 'x86_64')]:
+                        package = packages / (
+                            f'{family}-7-{version.replace("~", "-")}-3-'
+                            f'{arch}.{format_}'
                         )
                         if format_ == 'deb':
                             result = subprocess.check_output(
@@ -124,10 +93,10 @@ class NativePackagesTests(unittest.TestCase):
                                 ],
                                 text=True,
                             )
-                            self.assertIn(f'Version: 1:{version}-1', result)
+                            self.assertIn(f'Version: 1:{version}-3', result)
                             self.assertIn('Architecture: amd64', result)
                             dependency = (
-                                f'gel-server-7 (= 1:{version}-1), gel-cli'
+                                f'gel-server-7 (= 1:{version}-3), gel-cli'
                                 if family == 'gel'
                                 else 'libc6'
                             )
@@ -145,7 +114,7 @@ class NativePackagesTests(unittest.TestCase):
                                 text=True,
                             )
                             self.assertEqual(
-                                result, f'{family}-7 1:{version}-1 x86_64'
+                                result, f'{family}-7 1:{version}-3 x86_64'
                             )
                             requirements = subprocess.check_output(
                                 ['rpm', '-qp', '--requires', str(package)],
@@ -153,92 +122,10 @@ class NativePackagesTests(unittest.TestCase):
                             ).splitlines()
                             self.assertEqual(
                                 requirements,
-                                [f'gel-server-7 = 1:{version}-1', 'gel-cli']
+                                [f'gel-server-7 = 1:{version}-3', 'gel-cli']
                                 if family == 'gel'
                                 else [],
                             )
-
-    def test_manifest_uses_final_bytes_and_requires_complete_pair(self):
-        with tempfile.TemporaryDirectory() as d:
-            out = Path(d)
-            for arch, names in self.native.ARCHES.items():
-                tree = out / 'gel-server-7.2-rc.1+abc'
-                tree.mkdir(exist_ok=True)
-                info = self.native.render_configs(tree, arch, '2', out / arch)
-                info['channel'] = 'testing'
-                (out / f'build-info-{arch}.json').write_text(json.dumps(info))
-                for family in ['gel-server', 'gel']:
-                    for format_, name in zip(['deb', 'rpm'], names):
-                        (
-                            out / f'{family}-7-7.2-rc.1-2-{name}.{format_}'
-                        ).write_bytes(b'unsigned')
-            rpm = out / 'gel-server-7-7.2-rc.1-2-aarch64.rpm'
-            rpm.write_bytes(b'final signed bytes')
-            tag, manifest = self.native.manifest(out, 'testing')
-            self.assertEqual(tag, 'pkg-gel-7-7.2-rc.1-2')
-            self.assertEqual(manifest['schema_version'], 2)
-            self.assertEqual(manifest['indexes'], [])
-            self.assertEqual(len(manifest['native']['packages']), 8)
-            entry = next(
-                p
-                for p in manifest['native']['packages']
-                if p['url'].endswith(rpm.name)
-            )
-            self.assertEqual(entry['size'], rpm.stat().st_size)
-            self.assertEqual(
-                entry['sha256'], hashlib.sha256(rpm.read_bytes()).hexdigest()
-            )
-            manifest_path = out / 'gel-registry.json'
-            manifest_path.write_text(json.dumps(manifest))
-            assets = []
-            for path in (
-                list(out.glob('*.deb'))
-                + list(out.glob('*.rpm'))
-                + [manifest_path]
-            ):
-                assets.append(
-                    {
-                        'name': path.name,
-                        'size': path.stat().st_size,
-                        'digest': 'sha256:'
-                        + hashlib.sha256(path.read_bytes()).hexdigest(),
-                    }
-                )
-            with mock.patch.object(
-                self.native, 'api', return_value={'assets': assets}
-            ):
-                self.native.verify_release(tag, manifest_path)
-                assets[0]['size'] += 1
-                with self.assertRaises(ValueError):
-                    self.native.verify_release(tag, manifest_path)
-                assets[0]['size'] -= 1
-                assets[-1]['digest'] = 'sha256:' + '0' * 64
-                with self.assertRaises(ValueError):
-                    self.native.verify_release(tag, manifest_path)
-            rpm.unlink()
-            with self.assertRaises(ValueError):
-                self.native.manifest(out, 'testing')
-
-    def test_manifest_rejects_duplicate_architecture_metadata(self):
-        with tempfile.TemporaryDirectory() as d:
-            out = Path(d)
-            tree = out / 'gel-server-7.1+abc'
-            tree.mkdir()
-            info = self.native.render_configs(tree, 'x86_64', '1', out)
-            info['channel'] = 'testing'
-            # Inconsistent arm metadata used to collapse the expected set
-            # to four files, allowing an incomplete release manifest.
-            for arch in self.native.ARCHES:
-                (out / f'build-info-{arch}.json').write_text(json.dumps(info))
-            for family in ['gel-server', 'gel']:
-                for format_, arch in zip(
-                    ['deb', 'rpm'], self.native.ARCHES['x86_64']
-                ):
-                    (out / f'{family}-7-7.1-1-{arch}.{format_}').write_bytes(
-                        b'package bytes'
-                    )
-            with self.assertRaisesRegex(ValueError, 'architecture'):
-                self.native.manifest(out, 'testing')
 
     @unittest.skipUnless(shutil.which('zstd'), 'zstd required')
     def test_archive_root_marker_and_unsafe_paths(self):

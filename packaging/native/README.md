@@ -1,11 +1,23 @@
 # Native server packages
 
-`scripts/native_packages.py --source-tag v7.1 --channel testing --revision 1`
-fetches both Linux glibc portable assets from `gelstable/gel`. It verifies the
-GitHub API's SHA256 digest and byte count before extracting the tarball, then
-uses nFPM 2.47.0 to produce architecture-specific server and metapackages.
-Python 3.12+, zstd and nFPM must be installed. `--arch x86_64|aarch64`, `--cache`
-and `--out` support individual native runners and reusable verified downloads.
+The reusable `native-packages.yml` workflow accepts `portable-artifact`, an
+Actions artifact containing `gel-server-{x86_64,aarch64}-unknown-linux-gnu.tar.zst`,
+and optional `revision` (default `1`). It returns the signed packages as the
+`native-packages` Actions artifact and does not publish. The caller must run in
+a job allowed to use the `package-signing` Environment. That Environment
+supplies `PACKAGE_SIGNING_KEY` and `PACKAGE_SIGNING_FPR` to the signing job.
+The caller is responsible for the integrity of its portable artifact.
+
+Manual dispatch accepts `source_tag` and optional `repack`. Shared registry
+actions plan the next revision, verify source digests before extraction, sign
+RPMs, and publish a validated native-only release. An already packaged release
+is a successful no-op unless `repack` is selected. PRs build and install-test
+`v7.1` on both architectures without signing or publishing.
+
+`scripts/native_packages.py --archive VERIFIED.tar.zst --arch x86_64 --revision 1`
+builds four packages for one architecture from a local verified archive. The
+slot and native version come from its top directory. Python 3.12+, zstd and
+nFPM are required; `--out` selects the output directory.
 
 The complete portable tree stays under `/usr/lib/gel-server-<slot>/`; both
 server command names link to its real binary. The package's native version
@@ -27,17 +39,6 @@ it, stops and removes it, checking that account/data survive. A public key at
 `/packages/test-public.asc` is imported to verify signed test RPMs. No private key
 is needed by the test. `--fetch-cli --arch ARCH --out DIR` fetches the latest
 published CLI binary with API digest/size verification.
-
-`sign-rpms.sh DIRECTORY` receives `PACKAGE_SIGNING_KEY` and
-`PACKAGE_SIGNING_FPR` only in the protected default-branch signing job. It uses
-a temporary private GnuPG home and verifies signatures with an isolated RPM
-database containing only the exported public key. `--manifest --out DIR
---channel CHANNEL` requires all eight final packages plus both build-info JSON
-files and emits the v2 native-only `gel-registry.json` and safe family tag
-`pkg-gel-<slot>-<version>-<revision>`. Digests describe the signed bytes.
-`--verify-release TAG --out DIR` checks uploaded packages and manifest against
-GitHub asset size/digest fields before publication. A failed draft is retained;
-a retry must use a fresh revision rather than overwrite assets.
 
 ## Captured legacy behavior
 

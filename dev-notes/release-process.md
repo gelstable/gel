@@ -139,28 +139,11 @@ You can do that with a button top-right.
 
 ## Native APT/RPM packages
 
-After the portable GitHub release is published, run `native-packages.yml` on
-`master` with `source_tag` (for example `v7.1`), `channel` (`stable` or `testing`)
-and `revision` (initially `1`). Both glibc portable assets must have SHA256 digest
-and size fields in the GitHub API. The workflow verifies them before unpacking
-and packages the unchanged portable trees using checksum-pinned nFPM.
-
-The native runners build and install-test Debian 12/Rocky 9 packages without
-secrets. After both architectures pass, the default-branch-only
-`package-signing` Environment supplies `PACKAGE_SIGNING_KEY` and
-`PACKAGE_SIGNING_FPR`; configure its protection to permit only `master`.
-The signing job signs RPMs and verifies with only the public key trusted.
-The release job computes the v2 native-only manifest from the signed artifact,
-creates a draft `pkg-gel-<slot>-<version>-<revision>` release, uploads all eight
-packages and `gel-registry.json`, verifies the API upload digests/sizes, and
-publishes. The testing channel creates a GitHub prerelease.
-
-Published native assets are immutable. Increase the revision to repackage the
-same upstream version; never replace/delete package assets. Failed drafts are
-retained for inspection and also require a fresh revision on retry. The
-registry consumes the published manifest to update both native repositories.
-This workflow is separate from portable publication and does not change its
-archive registry/upload configuration.
+To package an existing portable release, dispatch `native-packages.yml` on
+`master` with `source_tag` (for example `v7.1`). An already packaged version is
+a successful no-op; also check `repack` to publish the next native revision.
+New releases will be packaged by the release pipeline in the follow-up work.
+The reusable workflow interface is documented in `packaging/native/README.md`.
 
 ## Changelog
 

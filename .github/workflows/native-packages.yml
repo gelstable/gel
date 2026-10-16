@@ -1,23 +1,28 @@
+# Reusable interface: portable-artifact contains both
+# gel-server-{x86_64,aarch64}-unknown-linux-gnu.tar.zst archives; revision defaults
+# to 1. Returns the signed native-packages Actions artifact; never publishes.
+# The caller must run in a job allowed to use the package-signing Environment
+# which supplies PACKAGE_SIGNING_KEY and PACKAGE_SIGNING_FPR to the sign job.
 name: Native server packages
 on:
+  workflow_call:
+    inputs:
+      portable-artifact:
+        required: true
+        type: string
+      revision:
+        default: '1'
+        type: string
   workflow_dispatch:
     inputs:
       source_tag:
         description: Published portable release tag
         required: true
-        default: v7.1
         type: string
-      channel:
-        description: Native repository channel
-        required: true
-        default: testing
-        type: choice
-        options: [stable, testing]
-      revision:
-        description: Native package revision (increase for repacks)
-        required: true
-        default: '1'
-        type: string
+      repack:
+        description: Publish the next revision even if already packaged
+        default: false
+        type: boolean
   pull_request:
     paths:
       - scripts/native_packages.py
@@ -27,10 +32,29 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: native-server-${{ github.ref }}-${{ inputs.source_tag || 'v7.1' }}-${{ inputs.revision || '1' }}
+  group: native-server-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_tag || inputs.portable-artifact || 'v7.1' }}
   cancel-in-progress: false
 jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch' && inputs.portable-artifact == ''
+    runs-on: ubuntu-24.04
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - id: plan
+        uses: gelstable/gel-registry/.github/actions/native-plan@6a8bacba9b8ace0b44f150587be7c214569e903b
+        with:
+          product: server
+          source_tag: ${{ inputs.source_tag }}
+          repack: ${{ inputs.repack }}
+        env:
+          GH_TOKEN: ${{ github.token }}
   build:
+    needs: plan
+    if: >-
+      always() && !cancelled() &&
+      (inputs.portable-artifact != '' || github.event_name != 'workflow_dispatch' ||
+       (needs.plan.result == 'success' && needs.plan.outputs.plan != '[]'))
     strategy:
       fail-fast: false
       matrix:
@@ -39,107 +63,121 @@ jobs:
             native_arch: amd64
             rpm_arch: x86_64
             runner: ubuntu-24.04
-            nfpm_arch: x86_64
-            nfpm_sha: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
           - arch: aarch64
             native_arch: arm64
             rpm_arch: aarch64
             runner: ubuntu-24.04-arm
-            nfpm_arch: arm64
-            nfpm_sha: 1c0f5f2999b9a974bfb04fdb0cc3306096de530ac5dbb25d739cc5f5219c919c
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Install pinned nFPM and tools
-        env:
-          NFPM_ARCH: ${{ matrix.nfpm_arch }}
-          NFPM_SHA: ${{ matrix.nfpm_sha }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y zstd rpm
-          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_${NFPM_ARCH}.tar.gz" -o /tmp/nfpm.tar.gz
-          echo "$NFPM_SHA  /tmp/nfpm.tar.gz" | sha256sum --check
-          tar -xzf /tmp/nfpm.tar.gz -C /tmp nfpm
-          sudo install /tmp/nfpm /usr/local/bin/nfpm
+      - uses: gelstable/gel-registry/.github/actions/setup-nfpm@6a8bacba9b8ace0b44f150587be7c214569e903b
+      - run: sudo apt-get update && sudo apt-get install -y zstd rpm
       - name: Unit tests
         run: python3 -m unittest tests.test_native_packages
-      - name: Build from verified portable assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: inputs.portable-artifact != ''
+        with:
+          name: ${{ inputs.portable-artifact }}
+          path: dist/source
+      - name: Download and verify published portable source
+        if: inputs.portable-artifact == ''
         env:
-          SOURCE_TAG: ${{ inputs.source_tag || 'v7.1' }}
-          CHANNEL: ${{ inputs.channel || 'testing' }}
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.plan.outputs.plan }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist/source
+          archive="dist/source/gel-server-$ARCH-unknown-linux-gnu.tar.zst"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            source=$(jq -c --arg arch "$ARCH" '.[0].sources[$arch]' <<< "$PLAN")
+          else
+            source=$(gh api repos/gelstable/gel/releases/tags/v7.1 | jq -ce --arg name "gel-server-$ARCH-unknown-linux-gnu.tar.zst" '
+              .assets[] | select(.name == $name) |
+              {url: .browser_download_url, sha256: (.digest | ltrimstr("sha256:")), size: .size}')
+          fi
+          digest=$(jq -er '.sha256 | select(test("^[a-f0-9]{64}$"))' <<< "$source")
+          size=$(jq -er '.size | select(type == "number" and . > 0 and floor == .)' <<< "$source")
+          curl -fL --retry 3 "$(jq -er .url <<< "$source")" -o "$archive"
+          echo "$digest  $archive" | sha256sum -c
+          test "$(stat -c %s "$archive")" = "$size"
+      - name: Build packages and fetch install-test CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN: ${{ needs.plan.outputs.plan }}
+          PORTABLE_ARTIFACT: ${{ inputs.portable-artifact }}
           REVISION: ${{ inputs.revision || '1' }}
           ARCH: ${{ matrix.arch }}
         run: |
-          python3 scripts/native_packages.py --source-tag "$SOURCE_TAG" --channel "$CHANNEL" --revision "$REVISION" --arch "$ARCH" --out dist/native
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && -z "${PORTABLE_ARTIFACT}" ]]; then
+            REVISION=$(jq -er '.[0].revision' <<< "$PLAN")
+          fi
+          python3 scripts/native_packages.py --archive "dist/source/gel-server-$ARCH-unknown-linux-gnu.tar.zst" --revision "$REVISION" --arch "$ARCH" --out dist/native
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && -z "${PORTABLE_ARTIFACT}" ]]; then
+            tag=$(jq -r .tag "dist/native/build-info-$ARCH.json")
+            test "$tag" = "$(jq -er '.[0].tag' <<< "$PLAN")"
+          fi
           python3 scripts/native_packages.py --fetch-cli --arch "$ARCH" --out dist/cli
       - name: Install, bootstrap, query and uninstall on Debian 12 and Rocky 9
         env:
           DEB_ARCH: ${{ matrix.native_arch }}
           RPM_ARCH: ${{ matrix.rpm_arch }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          slot=$(python3 -c 'import glob,json; print(json.load(open(glob.glob("dist/native/build-info-*.json")[0]))["slot"])')
+          slot=$(jq -r .slot "dist/native/build-info-$ARCH.json")
           docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" debian:12 bash /test/install-test.sh deb "$DEB_ARCH" "$slot"
           docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" rockylinux:9 bash /test/install-test.sh rpm "$RPM_ARCH" "$slot"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-${{ matrix.arch }}
-          path: dist/native/
+          name: unsigned-native-${{ matrix.arch }}
+          path: |
+            dist/native/*.deb
+            dist/native/*.rpm
           if-no-files-found: error
   sign:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     environment: package-signing
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: native-*
+          pattern: unsigned-native-*
           merge-multiple: true
           path: dist/native
       - run: sudo apt-get update && sudo apt-get install -y rpm gnupg
-      - name: Sign RPMs and verify with isolated public trust
+      - uses: gelstable/gel-registry/.github/actions/sign-rpms@6a8bacba9b8ace0b44f150587be7c214569e903b
+        with:
+          directory: dist/native
         env:
           PACKAGE_SIGNING_KEY: ${{ secrets.PACKAGE_SIGNING_KEY }}
           PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
-        run: bash packaging/native/sign-rpms.sh dist/native
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: signed-native
-          path: dist/native/
+          name: native-packages
+          path: |
+            dist/native/*.deb
+            dist/native/*.rpm
           if-no-files-found: error
-  release:
-    needs: sign
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+  publish:
+    needs: [plan, sign]
+    if: github.event_name == 'workflow_dispatch' && inputs.portable-artifact == ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: signed-native
+          name: native-packages
           path: dist/native
-      - name: Assemble final manifest and publish verified release
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: "0.11.6"
+      - run: sudo apt-get update && sudo apt-get install -y rpm
+      - uses: gelstable/gel-registry/.github/actions/publish-native-release@6a8bacba9b8ace0b44f150587be7c214569e903b
+        with:
+          directory: dist/native
+          tag: ${{ fromJSON(needs.plan.outputs.plan)[0].tag }}
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANNEL: ${{ inputs.channel }}
-        run: |
-          tag=$(python3 scripts/native_packages.py --manifest --channel "$CHANNEL" --out dist/native)
-          # Existing releases/assets are immutable: never replace or delete them.
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; increase revision" >&2
-            exit 1
-          fi
-          options=()
-          if [[ "$CHANNEL" == testing ]]; then options+=(--prerelease); fi
-          gh release create "$tag" --draft --target "$GITHUB_SHA" --title "$tag" --notes "Native Gel server packages ($CHANNEL)." "${options[@]}"
-          gh release upload "$tag" dist/native/*.deb dist/native/*.rpm dist/native/gel-registry.json
-          python3 scripts/native_packages.py --verify-release "$tag" --out dist/native
-          gh release edit "$tag" --draft=false
