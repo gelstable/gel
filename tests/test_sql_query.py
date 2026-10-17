@@ -1796,6 +1796,27 @@ class TestSQLQuery(tb.SQLQueryTestCase):
             ]
         )
 
+    async def test_sql_query_introspection_07(self):
+        # Every emulated catalog table must be queryable on every supported
+        # backend version, including columns and tables that the backend
+        # does not have (or no longer has).
+        from edb.pgsql.resolver import sql_introspection
+
+        for schema, tables in (
+            ('information_schema', sql_introspection.INFORMATION_SCHEMA),
+            ('pg_catalog', sql_introspection.PG_CATALOG),
+        ):
+            for table, columns in tables.items():
+                with self.subTest(table=f'{schema}.{table}'):
+                    res = await self.scon.fetch(
+                        f'SELECT * FROM {schema}.{table} LIMIT 1'
+                    )
+                    if res:
+                        self.assertEqual(
+                            list(res[0].keys())[:len(columns)],
+                            [c[0] for c in columns],
+                        )
+
     async def test_sql_query_schemas_01(self):
         await self.scon.fetch('SELECT id FROM "inventory"."Item";')
         await self.scon.fetch('SELECT id FROM "public"."Person";')
@@ -2538,6 +2559,24 @@ class TestSQLQuery(tb.SQLQueryTestCase):
             " WHERE name = 'bytea_output'; "
         )
         await self.scon.execute("SET client_encoding='WIN874';")
+
+    async def test_sql_query_timezone_abbrevs(self):
+        # pg_catalog.pg_timezone_abbrevs() does not exist in PostgreSQL 18+
+        res = await self.squery_values(
+            """
+            SELECT abbrev, is_dst
+            FROM pg_catalog.pg_timezone_abbrevs()
+            WHERE abbrev = 'UTC'
+            """
+        )
+        self.assertEqual(res, [["UTC", False]])
+
+        res = await self.squery_values(
+            """
+            SELECT count(*) > 0 FROM pg_timezone_abbrevs()
+            """
+        )
+        self.assertEqual(res, [[True]])
 
     async def test_sql_query_computed_01(self):
         # single property

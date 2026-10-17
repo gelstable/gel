@@ -1696,7 +1696,9 @@ def _compile_ql_explain(
             args[name] = ireval.evaluate_to_python_val(arg_ir.expr, schema)
 
     analyze = 'ANALYZE true, ' if args['execute'] else ''
-    buffers = 'BUFFERS, ' if args['buffers'] else ''
+    # Always explicit, since PostgreSQL 18 enables BUFFERS by default
+    # with ANALYZE.
+    buffers = 'BUFFERS true, ' if args['buffers'] else 'BUFFERS false, '
     exp_command = f'EXPLAIN ({analyze}{buffers}FORMAT JSON, VERBOSE true)'
 
     ctx = dataclasses.replace(

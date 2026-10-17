@@ -25,6 +25,7 @@ from typing import (
     Optional,
     Protocol,
     Iterable,
+    Mapping,
     Sequence,
     cast,
     Any
@@ -3579,7 +3580,11 @@ class TypeIDToConfigType(trampoline.VersionedFunction):
                 ('typeid', ('uuid',)),
             ],
             returns=('text',),
-            volatility='immutable',
+            # Not immutable, since it might raise. Since PostgreSQL 18, the
+            # planner sees the actual arguments of SQL functions, and would
+            # constant-fold an immutable call even when it is in an unused
+            # COALESCE fallback, raising an error.
+            volatility='stable',
             text=self.text,
         )
 
@@ -6732,6 +6737,63 @@ def _generate_sql_information_schema(
     backend_version: params.BackendVersion
 ) -> list[dbops.Command]:
 
+    # Helper to build the column list of a pg_catalog table, as we expose it
+    # over SQL, for the given backend version. The exposed set of columns
+    # does not depend on the backend version: columns that the backend does
+    # not have (because they were added later or have been removed since)
+    # are filled with NULLs.
+    #
+    # Columns that some later PostgreSQL version removes are always NULL, even
+    # if the backend still has them, so that the views we create do not stop
+    # the backend from being upgraded to a newer major version with
+    # pg_upgrade (which recreates the views on the new version).
+    def pg_catalog_columns(
+        table_name: str,
+        *,
+        prefix: str = '',
+        overrides: Optional[Mapping[str, str]] = None,
+    ) -> list[str]:
+        columns = []
+        for c_name, c_typ, c_ver_since, c_ver_until in (
+            sql_introspection.PG_CATALOG[table_name]
+        ):
+            if overrides and c_name in overrides:
+                columns.append(f'{overrides[c_name]} AS {c_name}')
+            elif c_ver_until is None and sql_introspection.column_exists_in(
+                c_ver_since, c_ver_until, backend_version.major
+            ):
+                columns.append(prefix + c_name)
+            elif c_typ:
+                columns.append(f'NULL::{c_typ} AS {c_name}')
+            else:
+                columns.append(f'NULL AS {c_name}')
+        return columns
+
+    # Helper to create a view with the signature of a pg_catalog table, but
+    # without any rows. It does not reference the underlying table, so it
+    # works regardless of permissions or platform support.
+    def empty_pg_view(
+        table_name: str,
+        *,
+        system_columns: bool = False,
+    ) -> trampoline.VersionedView:
+        columns = [
+            f'NULL::{c_typ or "text[]"} AS {c_name}'
+            for c_name, c_typ, _, _ in sql_introspection.PG_CATALOG[table_name]
+        ]
+        if system_columns:
+            columns.extend([
+                f"'pg_catalog.{table_name}'::regclass::oid AS tableoid",
+                'xmin', 'cmin', 'xmax', 'cmax', 'ctid',
+            ])
+            from_clause = 'FROM pg_namespace WHERE FALSE'
+        else:
+            from_clause = 'LIMIT 0'
+        return trampoline.VersionedView(
+            name=("edgedbsql", table_name),
+            query=f"SELECT {', '.join(columns)} {from_clause}",
+        )
+
     # Helper to create wrappers around materialized views.  For
     # performance, we use MATERIALIZED VIEW for some of our SQL
     # emulation tables. Unfortunately we can't use those directly,
@@ -7152,6 +7214,38 @@ def _generate_sql_information_schema(
         ),
     ]
 
+    pg_class_cols = ', '.join(pg_catalog_columns('pg_class', prefix='pc.'))
+    # Not pa.*, which would pin the columns of the backend's pg_attribute
+    pg_attribute_cols = ', '.join(
+        pg_catalog_columns('pg_attribute', prefix='pa.')
+    )
+    pg_class_user_cols = ', '.join(pg_catalog_columns(
+        'pg_class',
+        prefix='pc.',
+        overrides={
+            'relname': 'vt.table_name',
+            'relnamespace': 'edgedbsql_VER.uuid_to_oid(vt.module_id)',
+            # don't care about CHECK constraints
+            'relchecks': '0::smallint',
+        },
+    ))
+    pg_class_tuple_cols = ', '.join(pg_catalog_columns(
+        'pg_class',
+        prefix='pc.',
+        overrides={
+            'relname': 'edgedbsql_VER._long_name(pc.reltype::text, tup.name)',
+            'relnamespace': 'nsdef.oid',
+            # don't care about CHECK constraints
+            'relchecks': '0::smallint',
+        },
+    ))
+
+    # attcompression was added in PostgreSQL 14
+    attcompression = (
+        'attcompression' if backend_version.major >= 14
+        else '\'\'::"char" AS attcompression'
+    )
+
     pg_catalog_views = [
         trampoline.VersionedView(
             name=("edgedbsql", "pg_namespace_"),
@@ -7211,10 +7305,7 @@ def _generate_sql_information_schema(
                         'edgedb', 'edgedbstd', 'edgedb_VER', 'edgedbstd_VER',
                         'edgedbpub', 'edgedbt')
         """.format(
-                ",".join(
-                    f"pt.{col}"
-                    for col, _, _ in sql_introspection.PG_CATALOG["pg_type"][3:]
-                )
+                ",".join(pg_catalog_columns("pg_type", prefix="pt.")[3:])
             ),
         ),
         make_wrapper_view("pg_type"),
@@ -7224,9 +7315,9 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_class_tables"),
             materialized=True,
-            query="""
+            query=f"""
         -- Postgres tables
-        SELECT pc.*
+        SELECT {pg_class_cols}
         FROM pg_class pc
         JOIN pg_namespace pn ON pc.relnamespace = pn.oid
         WHERE nspname IN ('pg_catalog', 'pg_toast', 'information_schema')
@@ -7234,40 +7325,7 @@ def _generate_sql_information_schema(
         UNION ALL
 
         -- user-defined tables
-        SELECT
-            oid,
-            vt.table_name as relname,
-            edgedbsql_VER.uuid_to_oid(vt.module_id) as relnamespace,
-            reltype,
-            reloftype,
-            relowner,
-            relam,
-            relfilenode,
-            reltablespace,
-            relpages,
-            reltuples,
-            relallvisible,
-            reltoastrelid,
-            relhasindex,
-            relisshared,
-            relpersistence,
-            relkind,
-            relnatts,
-            0 as relchecks, -- don't care about CHECK constraints
-            relhasrules,
-            relhastriggers,
-            relhassubclass,
-            relrowsecurity,
-            relforcerowsecurity,
-            relispopulated,
-            relreplident,
-            relispartition,
-            relrewrite,
-            relfrozenxid,
-            relminmxid,
-            relacl,
-            reloptions,
-            relpartbound
+        SELECT {pg_class_user_cols}
         FROM pg_class pc
         JOIN edgedbsql_VER.virtual_tables vt ON vt.pg_type_id = pc.reltype
         """,
@@ -7285,7 +7343,10 @@ def _generate_sql_information_schema(
                 WHEN COALESCE(is_id.t, FALSE) THEN TRUE
                 ELSE pi.indisprimary
             END AS indisunique,
-            {'pi.indnullsnotdistinct,' if backend_version.major >= 15 else ''}
+            {
+                'pi.indnullsnotdistinct,' if backend_version.major >= 15
+                else 'FALSE AS indnullsnotdistinct,'
+            }
             CASE
                 WHEN COALESCE(is_id.t, FALSE) THEN TRUE
                 ELSE pi.indisprimary
@@ -7333,7 +7394,7 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_class_"),
             materialized=True,
-            query="""
+            query=f"""
         -- tables
         SELECT pc.*
         FROM edgedbsql_VER.pg_class_tables pc
@@ -7341,47 +7402,14 @@ def _generate_sql_information_schema(
         UNION
 
         -- indexes
-        SELECT pc.*
+        SELECT {pg_class_cols}
         FROM pg_class pc
         JOIN pg_index pi ON pc.oid = pi.indexrelid
 
         UNION
 
         -- compound types (tuples)
-        SELECT
-            pc.oid,
-            edgedbsql_VER._long_name(pc.reltype::text, tup.name) as relname,
-            nsdef.oid as relnamespace,
-            pc.reltype,
-            pc.reloftype,
-            pc.relowner,
-            pc.relam,
-            pc.relfilenode,
-            pc.reltablespace,
-            pc.relpages,
-            pc.reltuples,
-            pc.relallvisible,
-            pc.reltoastrelid,
-            pc.relhasindex,
-            pc.relisshared,
-            pc.relpersistence,
-            pc.relkind,
-            pc.relnatts,
-            0 as relchecks, -- don't care about CHECK constraints
-            pc.relhasrules,
-            pc.relhastriggers,
-            pc.relhassubclass,
-            pc.relrowsecurity,
-            pc.relforcerowsecurity,
-            pc.relispopulated,
-            pc.relreplident,
-            pc.relispartition,
-            pc.relrewrite,
-            pc.relfrozenxid,
-            pc.relminmxid,
-            pc.relacl,
-            pc.reloptions,
-            pc.relpartbound
+        SELECT {pg_class_tuple_cols}
         FROM pg_class pc
         JOIN edgedb_VER."_SchemaTuple" tup ON tup.backend_id = pc.reltype
         JOIN (
@@ -7402,7 +7430,7 @@ def _generate_sql_information_schema(
         trampoline.VersionedView(
             name=("edgedbsql", "pg_attribute_ext"),
             materialized=True,
-            query=r"""
+            query=rf"""
         SELECT attrelid,
             attname,
             atttypid,
@@ -7411,7 +7439,7 @@ def _generate_sql_information_schema(
             attnum,
             attnum as attnum_internal,
             attndims,
-            attcacheoff,
+            -1::integer AS attcacheoff, -- removed in PG 18, -1 on disk before
             atttypmod,
             attbyval,
             attstorage,
@@ -7428,7 +7456,8 @@ def _generate_sql_information_schema(
             attacl,
             attoptions,
             attfdwoptions,
-            null::int[] as attmissingval
+            null::int[] as attmissingval,
+            {attcompression}
         FROM pg_attribute pa
         JOIN pg_class pc ON pa.attrelid = pc.oid
         JOIN pg_namespace pn ON pc.relnamespace = pn.oid
@@ -7451,7 +7480,7 @@ def _generate_sql_information_schema(
             ) - 6)::smallint AS attnum,
             t.attnum as attnum_internal,
             COALESCE(attndims, 0) as attndims,
-            COALESCE(attcacheoff, -1) as attcacheoff,
+            -1::integer AS attcacheoff,
             COALESCE(atttypmod, -1) as atttypmod,
             COALESCE(attbyval, FALSE) as attbyval,
             COALESCE(attstorage, 'x') as attstorage,
@@ -7469,7 +7498,8 @@ def _generate_sql_information_schema(
             attacl,
             attoptions,
             attfdwoptions,
-            null::int[] as attmissingval
+            null::int[] as attmissingval,
+            ''::"char" AS attcompression
         FROM (
         SELECT
             COALESCE(
@@ -7480,7 +7510,7 @@ def _generate_sql_information_schema(
             COALESCE(spec.position, 2) AS col_position,
             (sp.required IS TRUE OR spec.k IS NOT NULL) as required,
             pc.oid AS pc_oid,
-            pa.*
+            {pg_attribute_cols}
 
         FROM edgedb_VER."_SchemaPointer" sp
         JOIN edgedbsql_VER.virtual_tables vt ON vt.id = sp.source
@@ -7520,7 +7550,7 @@ def _generate_sql_information_schema(
             spec.position as position,
             TRUE as required,
             pa.attrelid as pc_oid,
-            pa.*
+            {pg_attribute_cols}
         FROM edgedb_VER."_SchemaProperty" sp
         JOIN pg_class pc ON pc.relname = sp.id::TEXT
         JOIN pg_attribute pa ON pa.attrelid = pc.oid
@@ -7543,7 +7573,7 @@ def _generate_sql_information_schema(
             pa.attnum as position,
             TRUE as required,
             pa.attrelid as pc_oid,
-            pa.*
+            {pg_attribute_cols}
         FROM pg_attribute pa
         JOIN pg_class pc ON pc.oid = pa.attrelid
         JOIN edgedbsql_VER.virtual_tables vt ON vt.pg_type_id = pc.reltype
@@ -7580,6 +7610,7 @@ def _generate_sql_information_schema(
           attoptions,
           attfdwoptions,
           attmissingval,
+          attcompression,
           'pg_catalog.pg_attribute'::regclass::oid as tableoid,
           xmin,
           cmin,
@@ -7594,25 +7625,13 @@ def _generate_sql_information_schema(
             name=("edgedbsql", "pg_database"),
             query=f"""
         SELECT
-            oid,
-            frontend_name.n as datname,
-            datdba,
-            encoding,
-            {'datlocprovider,' if backend_version.major >= 15 else ''}
-            datcollate,
-            datctype,
-            datistemplate,
-            datallowconn,
-            {'dathasloginevt,' if backend_version.major >= 17 else ''}
-            datconnlimit,
-            0::oid AS datlastsysoid,
-            datfrozenxid,
-            datminmxid,
-            dattablespace,
-            {'datlocale,' if backend_version.major >= 17 else ''}
-            {'daticurules,' if backend_version.major >= 16 else ''}
-            {'datcollversion,' if backend_version.major >= 15 else ''}
-            datacl,
+            {', '.join(pg_catalog_columns(
+                'pg_database',
+                overrides={
+                    'datname': 'frontend_name.n',
+                    'datlastsysoid': '0::oid',
+                },
+            ))},
             tableoid, xmin, cmin, xmax, cmax, ctid
         FROM
             pg_database,
@@ -7636,7 +7655,9 @@ def _generate_sql_information_schema(
             query="""
         SELECT n.nspname AS schemaname,
             c.relname AS tablename,
+            c.oid AS tableid,
             a.attname,
+            a.attnum,
             s.stainherit AS inherited,
             s.stanullfrac AS null_frac,
             s.stawidth AS avg_width,
@@ -7647,7 +7668,10 @@ def _generate_sql_information_schema(
             s.stanumbers1[1] AS correlation,
             NULL::real[] AS most_common_elems,
             s.stanumbers1 AS most_common_elem_freqs,
-            s.stanumbers1 AS elem_count_histogram
+            s.stanumbers1 AS elem_count_histogram,
+            NULL::real[] AS range_length_histogram,
+            NULL::real AS range_empty_frac,
+            NULL::real[] AS range_bounds_histogram
         FROM pg_statistic s
         JOIN pg_class c ON c.oid = s.starelid
         JOIN edgedbsql_VER.pg_attribute_ext a ON (
@@ -7671,6 +7695,7 @@ def _generate_sql_information_schema(
           'p'::"char" AS contype,
           pc.condeferrable,
           pc.condeferred,
+          TRUE AS conenforced,
           pc.convalidated,
           pc.conrelid,
           pc.contypid,
@@ -7683,6 +7708,7 @@ def _generate_sql_information_schema(
           pc.conislocal,
           pc.coninhcount,
           pc.connoinherit,
+          FALSE AS conperiod,
           CASE WHEN pa.attname = 'id'
             THEN ARRAY[1]::int2[] -- id will always have attnum 1
             ELSE ARRAY[1, 2]::int2[] -- source and target
@@ -7717,6 +7743,7 @@ def _generate_sql_information_schema(
           'f'::"char" AS contype,
           FALSE AS condeferrable,
           FALSE AS condeferred,
+          TRUE AS conenforced,
           TRUE AS convalidated,
           pc.oid AS conrelid,
           0::oid AS contypid,
@@ -7729,6 +7756,7 @@ def _generate_sql_information_schema(
           TRUE AS conislocal,
           0::int2 AS coninhcount,
           TRUE AS connoinherit,
+          FALSE AS conperiod,
           ARRAY[pa.attnum]::int2[] AS conkey,
           ARRAY[1]::int2[] AS confkey, -- id will always have attnum 1
           ARRAY['uuid_eq'::regproc]::oid[] AS conpfeqop,
@@ -7748,6 +7776,9 @@ def _generate_sql_information_schema(
         JOIN edgedbsql_VER.pg_attribute pa
           ON pa.attrelid = pc.oid
          AND pa.attname = sl.name || '_id'
+        -- computed links are not backed by a column that could be the
+        -- subject of a foreign key (pg_dump >= 18 dumps these)
+        WHERE sl.expr IS NULL
 
         UNION ALL
 
@@ -7765,6 +7796,7 @@ def _generate_sql_information_schema(
             'f'::"char" AS contype,
             FALSE AS condeferrable,
             FALSE AS condeferred,
+            TRUE AS conenforced,
             TRUE AS convalidated,
             pc.oid AS conrelid,
             pc.reltype AS contypid,
@@ -7777,6 +7809,7 @@ def _generate_sql_information_schema(
             TRUE AS conislocal,
             0::int2 AS coninhcount,
             TRUE AS connoinherit,
+            FALSE AS conperiod,
             ARRAY[spec.attnum]::int2[] AS conkey,
             ARRAY[1]::int2[] AS confkey,     -- id will have attnum 1
             ARRAY['uuid_eq'::regproc]::oid[] AS conpfeqop,
@@ -7880,13 +7913,12 @@ def _generate_sql_information_schema(
         ),
         trampoline.VersionedView(
             name=("edgedbsql", "pg_statistic_ext_data"),
-            query="""
+            query=f"""
         SELECT
-            stxoid,
-            stxdndistinct,
-            stxddependencies,
-            stxdmcv,
-            NULL::oid AS stxdexpr,
+            {', '.join(pg_catalog_columns(
+                'pg_statistic_ext_data',
+                overrides={'stxdexpr': 'NULL::oid'},
+            ))},
             tableoid, xmin, cmin, xmax, cmax, ctid
         FROM pg_statistic_ext_data
         """,
@@ -7946,24 +7978,11 @@ def _generate_sql_information_schema(
         # view expands the query to all columns, which is not allowed.
         # So we have to construct an empty view with correct signature that
         # does not reference pg_subscription.
-        trampoline.VersionedView(
-            name=("edgedbsql", "pg_subscription"),
-            query="""
-        SELECT
-            NULL::oid AS oid,
-            NULL::oid AS subdbid,
-            NULL::name AS subname,
-            NULL::oid AS subowner,
-            NULL::boolean AS subenabled,
-            NULL::text AS subconninfo,
-            NULL::name AS subslotname,
-            NULL::text AS subsynccommit,
-            NULL::oid AS subpublications,
-            tableoid, xmin, cmin, xmax, cmax, ctid
-        FROM pg_namespace
-        WHERE FALSE
-        """,
-        ),
+        empty_pg_view("pg_subscription", system_columns=True),
+        # pg_stats_ext_exprs would expose statistics of our internal tables.
+        empty_pg_view("pg_stats_ext_exprs"),
+        # Reading pg_shmem_allocations_numa fails on systems without NUMA.
+        empty_pg_view("pg_shmem_allocations_numa"),
         trampoline.VersionedView(
             name=("edgedbsql", "pg_tables"),
             query="""
@@ -8096,7 +8115,7 @@ def _generate_sql_information_schema(
                 query="SELECT {} LIMIT 0".format(
                     ",".join(
                         f"NULL::information_schema.{type} AS {name}"
-                        for name, type, _ver_since in columns
+                        for name, type, _ver_since, _ver_until in columns
                     )
                 ),
             )
@@ -8126,6 +8145,7 @@ def _generate_sql_information_schema(
         'pg_views',
         'pg_description',
         'pg_settings',
+        'pg_shmem_allocations_numa',
     }
 
     PG_TABLES_WITH_SYSTEM_COLS = {
@@ -8194,21 +8214,21 @@ def _generate_sql_information_schema(
 
     def construct_pg_view(
         table_name: str, backend_version: params.BackendVersion
-    ) -> Optional[dbops.View]:
-        pg_columns = sql_introspection.PG_CATALOG[table_name]
+    ) -> dbops.View:
+        if not any(
+            sql_introspection.column_exists_in(
+                c_ver_since, c_ver_until, backend_version.major
+            )
+            for _, _, c_ver_since, c_ver_until
+            in sql_introspection.PG_CATALOG[table_name]
+        ):
+            # The backend is too old to have this table.
+            return empty_pg_view(
+                table_name,
+                system_columns=table_name in PG_TABLES_WITH_SYSTEM_COLS,
+            )
 
-        columns = []
-        has_columns = False
-        for c_name, c_typ, c_ver_since in pg_columns:
-            if c_ver_since <= backend_version.major:
-                columns.append('o.' + c_name)
-                has_columns = True
-            elif c_typ:
-                columns.append(f'NULL::{c_typ} as {c_name}')
-            else:
-                columns.append(f'NULL as {c_name}')
-        if not has_columns:
-            return None
+        columns = pg_catalog_columns(table_name, prefix='o.')
 
         if table_name in PG_TABLES_WITH_SYSTEM_COLS:
             for c_name in SYSTEM_COLUMNS:
@@ -8224,8 +8244,7 @@ def _generate_sql_information_schema(
     for table_name in sql_introspection.PG_CATALOG.keys():
         if table_name in PG_TABLES_SKIP:
             continue
-        if v := construct_pg_view(table_name, backend_version):
-            views.append(v)
+        views.append(construct_pg_view(table_name, backend_version))
 
     util_functions = [
         # A 1:1 PL/pgSQL replication of the Postgres SplitIdentifierString
@@ -8834,6 +8853,18 @@ END;
             volatility='stable',
             text=r"""
                 SELECT pg_get_constraintdef(conid)
+            """
+        ),
+        trampoline.VersionedFunction(
+            # pg_catalog.pg_timezone_abbrevs() was removed in PostgreSQL 18,
+            # but the pg_timezone_abbrevs view exists in all versions.
+            name=("edgedbsql", "pg_timezone_abbrevs"),
+            args=[],
+            returns=('pg_catalog', 'pg_timezone_abbrevs'),
+            set_returning=True,
+            volatility='stable',
+            text=r"""
+                SELECT * FROM pg_catalog.pg_timezone_abbrevs
             """
         ),
     ]

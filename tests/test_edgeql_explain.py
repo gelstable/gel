@@ -1197,7 +1197,9 @@ class TestEdgeQLExplain(tb.QueryTestCase):
                     "pipeline": [
                         {
                             "plan_rows": 1,
-                            "actual_rows": 1,
+                            # actual_rows is not checked: it is averaged
+                            # over the loops, which PostgreSQL < 18 rounds
+                            # to an integer, but 18 reports as 0.94.
                             "actual_loops": 33,
                             "plan_type": 'IndexScan',
                             "properties": tb.bag([

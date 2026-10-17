@@ -606,6 +606,14 @@ func_calls_remapping: dict[tuple[str, ...], tuple[str, ...]] = {
         common.versioned_schema('edgedbsql'),
         'pg_get_constraintdef',
     ),
+    ('pg_catalog', 'pg_timezone_abbrevs'): (
+        common.versioned_schema('edgedbsql'),
+        'pg_timezone_abbrevs',
+    ),
+    ('pg_timezone_abbrevs',): (
+        common.versioned_schema('edgedbsql'),
+        'pg_timezone_abbrevs',
+    ),
 }
 
 funcs_with_text_args: set[str] = {

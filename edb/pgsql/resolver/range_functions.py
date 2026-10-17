@@ -443,7 +443,7 @@ COLUMNS = {
         'reply_time',
     ],
     'pg_stop_backup': ['lsn', 'labelfile', 'spcmapfile'],
-    'pg_timezone_abbrevs': ['abbrev', 'utc_offset', 'is_ds'],
+    'pg_timezone_abbrevs': ['abbrev', 'utc_offset', 'is_dst'],
     'pg_timezone_names': ['name', 'abbrev', 'utc_offset', 'is_dst'],
     'pg_walfile_name_offset': ['file_name', 'file_offset'],
     'pg_xact_commit_timestamp_origin': ['timestamp', 'roident'],

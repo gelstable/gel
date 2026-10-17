@@ -45,8 +45,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "catalog/pg_authid.h"
+#include "catalog/pg_type.h"
 #include "common/hashfn.h"
 #include "common/int.h"
 #include "common/jsonapi.h"
@@ -73,6 +75,7 @@
 #include "utils/jsonb.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/tuplestore.h"
 #include "utils/uuid.h"
 
 PG_MODULE_MAGIC;
@@ -92,6 +95,13 @@ static const uint32 PGSS_FILE_HEADER = 0x20241125;
 
 /* PostgreSQL major version number, changes in which invalidate all entries */
 static const uint32 PGSS_PG_MAJOR_VERSION = PG_VERSION_NUM / 100;
+
+/* Since PostgreSQL 19, hooks receive a read-only JumbleState */
+#if PG_VERSION_NUM >= 190000
+#define PGSS_JUMBLE_CONST const
+#else
+#define PGSS_JUMBLE_CONST
+#endif
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -403,15 +413,25 @@ static void pgss_shmem_request(void);
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
 static void pgss_post_parse_analyze(ParseState *pstate, Query *query,
-									JumbleState *jstate);
+									PGSS_JUMBLE_CONST JumbleState *jstate);
 static PlannedStmt *pgss_planner(Query *parse,
 								 const char *query_string,
 								 int cursorOptions,
-								 ParamListInfo boundParams);
+								 ParamListInfo boundParams
+#if PG_VERSION_NUM >= 190000
+								 , ExplainState *es
+#endif
+								 );
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
+#if PG_VERSION_NUM >= 180000
+static void pgss_ExecutorRun(QueryDesc *queryDesc,
+							 ScanDirection direction,
+							 uint64 count);
+#else
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 							 ScanDirection direction,
 							 uint64 count, bool execute_once);
+#endif
 static void pgss_ExecutorFinish(QueryDesc *queryDesc);
 static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
@@ -426,7 +446,7 @@ static void pgss_store(const char *query, uint64 queryId,
 					   const BufferUsage *bufusage,
 					   const WalUsage *walusage,
 					   const struct JitInstrumentation *jitusage,
-					   JumbleState *jstate,
+					   PGSS_JUMBLE_CONST JumbleState *jstate,
 					   bool edb_extracted,
 					   pg_uuid_t *id,
 					   EdbStmtType stmt_type,
@@ -452,11 +472,14 @@ static char *qtext_fetch(Size query_offset, int query_len,
 static bool need_gc_qtexts(void);
 static void gc_qtexts(void);
 static TimestampTz entry_reset(Oid userid, const Datum *dbids, int dbids_len, uint64 queryid, bool minmax_only);
-static char *generate_normalized_query(JumbleState *jstate, const char *query,
+static char *generate_normalized_query(PGSS_JUMBLE_CONST JumbleState *jstate,
+									   const char *query,
 									   int query_loc, int *query_len_p);
+#if PG_VERSION_NUM < 190000
 static void fill_in_constant_lengths(JumbleState *jstate, const char *query,
 									 int query_loc);
 static int	comp_location(const void *a, const void *b);
+#endif
 
 
 /*
@@ -567,6 +590,54 @@ _PG_init(void)
 	prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = pgss_ProcessUtility;
 }
+
+#if PG_VERSION_NUM >= 180000
+/*
+ * Since PostgreSQL 18, the location of a statement points to its first
+ * token, rather than to the end of the previous statement, so the leading
+ * query info comments are no longer included.  Extend the location
+ * backwards over the comment lines that immediately precede the statement.
+ */
+static void
+edbss_include_leading_comments(const char *src, int *location, int *len)
+{
+	int			start = *location;
+	int			pos = start;
+
+	for (;;)
+	{
+		int			line_end,
+					line_start;
+
+		/* skip whitespace preceding the current start */
+		while (pos > 0 && scanner_isspace(src[pos - 1]))
+			pos--;
+		if (pos == 0)
+			break;
+
+		/* find the start of the line ending at pos */
+		line_end = pos;
+		line_start = line_end;
+		while (line_start > 0 && src[line_start - 1] != '\n')
+			line_start--;
+		pos = line_start;
+		while (pos < line_end && scanner_isspace(src[pos]))
+			pos++;
+		if (line_end - pos < 2 || src[pos] != '-' || src[pos + 1] != '-')
+			break;
+
+		start = pos;
+		pos = line_start;
+	}
+
+	if (start < *location)
+	{
+		if (*len > 0)
+			*len += *location - start;
+		*location = start;
+	}
+}
+#endif
 
 const char *
 edbss_extract_info_line(const char *s, int *len) {
@@ -862,10 +933,17 @@ pgss_shmem_startup(void)
 
 	info.keysize = sizeof(pgssHashKey);
 	info.entrysize = sizeof(pgssEntry);
+#if PG_VERSION_NUM >= 190000
+	pgss_hash = ShmemInitHash("edb_stat_statements hash",
+							  pgss_max,
+							  &info,
+							  HASH_ELEM | HASH_BLOBS);
+#else
 	pgss_hash = ShmemInitHash("edb_stat_statements hash",
 							  pgss_max, pgss_max,
 							  &info,
 							  HASH_ELEM | HASH_BLOBS);
+#endif
 
 	LWLockRelease(AddinShmemInitLock);
 
@@ -1147,7 +1225,8 @@ error:
  * Post-parse-analysis hook: mark query with a queryId
  */
 static void
-pgss_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
+pgss_post_parse_analyze(ParseState *pstate, Query *query,
+						PGSS_JUMBLE_CONST JumbleState *jstate)
 {
 	EdbStmtInfo *info;
 	const char *query_str;
@@ -1178,6 +1257,10 @@ pgss_post_parse_analyze(ParseState *pstate, Query *query, JumbleState *jstate)
 	/* Parse EdgeDB query info JSON and overwrite query->queryId */
 	query_location = query->stmt_location;
 	query_len = query->stmt_len;
+#if PG_VERSION_NUM >= 180000
+	edbss_include_leading_comments(pstate->p_sourcetext,
+								   &query_location, &query_len);
+#endif
 	query_str = CleanQuerytext(pstate->p_sourcetext, &query_location, &query_len);
 	if ((info = edbss_extract_stmt_info(query_str, query_len)) != NULL) {
 		query->queryId = info->id.query_id;
@@ -1245,7 +1328,11 @@ static PlannedStmt *
 pgss_planner(Query *parse,
 			 const char *query_string,
 			 int cursorOptions,
-			 ParamListInfo boundParams)
+			 ParamListInfo boundParams
+#if PG_VERSION_NUM >= 190000
+			 , ExplainState *es
+#endif
+			 )
 {
 	PlannedStmt *result;
 
@@ -1278,12 +1365,21 @@ pgss_planner(Query *parse,
 		nesting_level++;
 		PG_TRY();
 		{
+#if PG_VERSION_NUM >= 190000
+			if (prev_planner_hook)
+				result = prev_planner_hook(parse, query_string, cursorOptions,
+										   boundParams, es);
+			else
+				result = standard_planner(parse, query_string, cursorOptions,
+										  boundParams, es);
+#else
 			if (prev_planner_hook)
 				result = prev_planner_hook(parse, query_string, cursorOptions,
 										   boundParams);
 			else
 				result = standard_planner(parse, query_string, cursorOptions,
 										  boundParams);
+#endif
 		}
 		PG_FINALLY();
 		{
@@ -1332,12 +1428,21 @@ pgss_planner(Query *parse,
 		nesting_level++;
 		PG_TRY();
 		{
+#if PG_VERSION_NUM >= 190000
+			if (prev_planner_hook)
+				result = prev_planner_hook(parse, query_string, cursorOptions,
+										   boundParams, es);
+			else
+				result = standard_planner(parse, query_string, cursorOptions,
+										  boundParams, es);
+#else
 			if (prev_planner_hook)
 				result = prev_planner_hook(parse, query_string, cursorOptions,
 										   boundParams);
 			else
 				result = standard_planner(parse, query_string, cursorOptions,
 										  boundParams);
+#endif
 		}
 		PG_FINALLY();
 		{
@@ -1355,10 +1460,21 @@ pgss_planner(Query *parse,
 static void
 pgss_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
+#if PG_VERSION_NUM >= 190000
+	/*
+	 * Since PostgreSQL 19 the executor allocates the instrumentation itself,
+	 * we only need to request it before ExecutorStart.
+	 */
+	if (pgss_enabled(nesting_level) && queryDesc->plannedstmt->queryId != UINT64CONST(0))
+		queryDesc->query_instr_options |= INSTRUMENT_ALL;
+#endif
+
 	if (prev_ExecutorStart)
 		prev_ExecutorStart(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);
+
+#if PG_VERSION_NUM < 190000
 
 	/*
 	 * If query has queryId zero, don't track it.  This prevents double
@@ -1381,22 +1497,34 @@ pgss_ExecutorStart(QueryDesc *queryDesc, int eflags)
 			MemoryContextSwitchTo(oldcxt);
 		}
 	}
+#endif
 }
 
 /*
  * ExecutorRun hook: all we need do is track nesting depth
  */
 static void
+#if PG_VERSION_NUM >= 180000
+pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
+#else
 pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, uint64 count,
 				 bool execute_once)
+#endif
 {
 	nesting_level++;
 	PG_TRY();
 	{
+#if PG_VERSION_NUM >= 180000
+		if (prev_ExecutorRun)
+			prev_ExecutorRun(queryDesc, direction, count);
+		else
+			standard_ExecutorRun(queryDesc, direction, count);
+#else
 		if (prev_ExecutorRun)
 			prev_ExecutorRun(queryDesc, direction, count, execute_once);
 		else
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#endif
 	}
 	PG_FINALLY();
 	{
@@ -1434,6 +1562,20 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	uint64		queryId = queryDesc->plannedstmt->queryId;
 
+#if PG_VERSION_NUM >= 190000
+	if (queryId != UINT64CONST(0) && queryDesc->query_instr &&
+		pgss_enabled(nesting_level))
+	{
+		pgss_store(queryDesc->sourceText,
+				   queryId,
+				   queryDesc->plannedstmt->stmt_location,
+				   queryDesc->plannedstmt->stmt_len,
+				   PGSS_EXEC,
+				   INSTR_TIME_GET_MILLISEC(queryDesc->query_instr->total),
+				   queryDesc->estate->es_total_processed,
+				   &queryDesc->query_instr->bufusage,
+				   &queryDesc->query_instr->walusage,
+#else
 	if (queryId != UINT64CONST(0) && queryDesc->totaltime &&
 		pgss_enabled(nesting_level))
 	{
@@ -1452,6 +1594,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				   queryDesc->estate->es_total_processed,
 				   &queryDesc->totaltime->bufusage,
 				   &queryDesc->totaltime->walusage,
+#endif
 				   queryDesc->estate->es_jit ? &queryDesc->estate->es_jit->instr : NULL,
 				   NULL,
 				   false,
@@ -1667,7 +1810,7 @@ pgss_store(const char *query, uint64 queryId,
 		   const BufferUsage *bufusage,
 		   const WalUsage *walusage,
 		   const struct JitInstrumentation *jitusage,
-		   JumbleState *jstate,
+		   PGSS_JUMBLE_CONST JumbleState *jstate,
 		   bool edb_extracted,
 		   pg_uuid_t *id,
 		   EdbStmtType stmt_type,
@@ -1768,7 +1911,7 @@ pgss_store(const char *query, uint64 queryId,
 			LWLockAcquire(pgss->lock, LW_SHARED);
 		}
 
-		extras_len = extras == NULL ? 0 : VARSIZE(JsonbPGetDatum(extras));
+		extras_len = extras == NULL ? 0 : VARSIZE(extras);
 
 		/* Append new query text to file with only shared lock held */
 		stored = qtext_store(norm_query ? norm_query : query, query_len,
@@ -3141,47 +3284,62 @@ release_lock:
  * Returns a palloc'd string.
  */
 static char *
-generate_normalized_query(JumbleState *jstate, const char *query,
+generate_normalized_query(PGSS_JUMBLE_CONST JumbleState *jstate,
+						  const char *query,
 						  int query_loc, int *query_len_p)
 {
-	char	   *norm_query;
+	StringInfoData norm_query;
 	int			query_len = *query_len_p;
-	int			i,
-				norm_query_buflen,	/* Space allowed for norm_query */
-				len_to_wrt,		/* Length (in bytes) to write */
+	int			len_to_wrt,		/* Length (in bytes) to write */
 				quer_loc = 0,	/* Source query byte location */
-				n_quer_loc = 0, /* Normalized query byte location */
 				last_off = 0,	/* Offset from start for previous tok */
 				last_tok_len = 0;	/* Length (in bytes) of that tok */
+	int			num_constants_replaced = 0;
+	LocationLen *locs;
 
 	/*
-	 * Get constants' lengths (core system only gives us locations).  Note
-	 * this also ensures the items are sorted by location.
+	 * Our output buffer is an expansible StringInfo, but avoid enlarging it
+	 * in most cases by reserving extra space for each constant location.
 	 */
+	Assert(jstate->clocations_count > 0);
+	initStringInfo(&norm_query);
+	enlargeStringInfo(&norm_query, query_len + jstate->clocations_count * 10);
+
+	/*
+	 * Determine constants' lengths (core system only gives us locations), and
+	 * return a sorted copy of jstate's LocationLen data with lengths filled
+	 * in.
+	 */
+#if PG_VERSION_NUM >= 190000
+	locs = ComputeConstantLengths(jstate, query, query_loc);
+#else
 	fill_in_constant_lengths(jstate, query, query_loc);
+	locs = jstate->clocations;
+#endif
 
-	/*
-	 * Allow for $n symbols to be longer than the constants they replace.
-	 * Constants must take at least one byte in text form, while a $n symbol
-	 * certainly isn't more than 11 bytes, even if n reaches INT_MAX.  We
-	 * could refine that limit based on the max value of n for the current
-	 * query, but it hardly seems worth any extra effort to do so.
-	 */
-	norm_query_buflen = query_len + jstate->clocations_count * 10;
-
-	/* Allocate result buffer */
-	norm_query = palloc(norm_query_buflen + 1);
-
-	for (i = 0; i < jstate->clocations_count; i++)
+	for (int i = 0; i < jstate->clocations_count; i++)
 	{
 		int			off,		/* Offset from start for cur tok */
 					tok_len;	/* Length (in bytes) of that tok */
 
-		off = jstate->clocations[i].location;
+#if PG_VERSION_NUM >= 180000
+		/*
+		 * If we have an external param at this location, but no lists are
+		 * being squashed across the query, then we skip here; this will make
+		 * us print the characters found in the original query that represent
+		 * the parameter in the next iteration (or after the loop is done),
+		 * which is a bit odd but seems to work okay in most cases.
+		 */
+		if (locs[i].extern_param && !jstate->has_squashed_lists)
+			continue;
+#endif
+
+		off = locs[i].location;
+
 		/* Adjust recorded location if we're dealing with partial string */
 		off -= query_loc;
 
-		tok_len = jstate->clocations[i].length;
+		tok_len = locs[i].length;
 
 		if (tok_len < 0)
 			continue;			/* ignore any duplicates */
@@ -3189,15 +3347,25 @@ generate_normalized_query(JumbleState *jstate, const char *query,
 		/* Copy next chunk (what precedes the next constant) */
 		len_to_wrt = off - last_off;
 		len_to_wrt -= last_tok_len;
-
 		Assert(len_to_wrt >= 0);
-		memcpy(norm_query + n_quer_loc, query + quer_loc, len_to_wrt);
-		n_quer_loc += len_to_wrt;
+		appendBinaryStringInfo(&norm_query, query + quer_loc, len_to_wrt);
 
-		/* And insert a param symbol in place of the constant token */
-		n_quer_loc += sprintf(norm_query + n_quer_loc, "$%d",
-							  i + 1 + jstate->highest_extern_param_id);
+		/*
+		 * And insert a param symbol in place of the constant token; and, if
+		 * we have a squashable list, insert a placeholder comment starting
+		 * from the list's second value.
+		 */
+		appendStringInfo(&norm_query, "$%d%s",
+						 num_constants_replaced + 1 + jstate->highest_extern_param_id,
+#if PG_VERSION_NUM >= 180000
+						 locs[i].squashed ? " /*, ... */" : ""
+#else
+						 ""
+#endif
+			);
+		num_constants_replaced++;
 
+		/* move forward */
 		quer_loc = off + tok_len;
 		last_off = off;
 		last_tok_len = tok_len;
@@ -3210,16 +3378,13 @@ generate_normalized_query(JumbleState *jstate, const char *query,
 	len_to_wrt = query_len - quer_loc;
 
 	Assert(len_to_wrt >= 0);
-	memcpy(norm_query + n_quer_loc, query + quer_loc, len_to_wrt);
-	n_quer_loc += len_to_wrt;
+	appendBinaryStringInfo(&norm_query, query + quer_loc, len_to_wrt);
 
-	Assert(n_quer_loc <= norm_query_buflen);
-	norm_query[n_quer_loc] = '\0';
-
-	*query_len_p = n_quer_loc;
-	return norm_query;
+	*query_len_p = norm_query.len;
+	return norm_query.data;
 }
 
+#if PG_VERSION_NUM < 190000
 /*
  * Given a valid SQL string and an array of constant-location records,
  * fill in the textual lengths of those constants.
@@ -3256,8 +3421,6 @@ fill_in_constant_lengths(JumbleState *jstate, const char *query,
 	core_yy_extra_type yyextra;
 	core_YYSTYPE yylval;
 	YYLTYPE		yylloc;
-	int			last_loc = -1;
-	int			i;
 
 	/*
 	 * Sort the records by location so that we can process them in order while
@@ -3278,20 +3441,31 @@ fill_in_constant_lengths(JumbleState *jstate, const char *query,
 	yyextra.escape_string_warning = false;
 
 	/* Search for each constant, in sequence */
-	for (i = 0; i < jstate->clocations_count; i++)
+	for (int i = 0; i < jstate->clocations_count; i++)
 	{
-		int			loc = locs[i].location;
+		int			loc;
 		int			tok;
 
-		/* Adjust recorded location if we're dealing with partial string */
-		loc -= query_loc;
+		/* Ignore constants after the first one in the same location */
+		if (i > 0 && locs[i].location == locs[i - 1].location)
+		{
+			locs[i].length = -1;
+			continue;
+		}
 
+#if PG_VERSION_NUM >= 180000
+		if (locs[i].squashed)
+			continue;			/* squashable list, ignore */
+#endif
+
+		/* Adjust recorded location if we're dealing with partial string */
+		loc = locs[i].location - query_loc;
 		Assert(loc >= 0);
 
-		if (loc <= last_loc)
-			continue;			/* Duplicate constant, ignore */
-
-		/* Lex tokens until we find the desired constant */
+		/*
+		 * We have a valid location for a constant that's not a dupe. Lex
+		 * tokens until we find the desired constant.
+		 */
 		for (;;)
 		{
 			tok = core_yylex(&yylval, &yylloc, yyscanner);
@@ -3337,8 +3511,6 @@ fill_in_constant_lengths(JumbleState *jstate, const char *query,
 		/* If we hit end-of-string, give up, leaving remaining lengths -1 */
 		if (tok == 0)
 			break;
-
-		last_loc = loc;
 	}
 
 	scanner_finish(yyscanner);
@@ -3364,3 +3536,4 @@ comp_location(const void *a, const void *b)
 		return 0;
 #endif
 }
+#endif
