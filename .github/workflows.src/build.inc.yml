@@ -9,7 +9,7 @@
         default: "master"
 <%- endmacro %>
 
-<% macro workflow(package, targets, publications, subdist="", publish_all=False) %>
+<% macro workflow(package, targets, publications, subdist="", publish_all=False, native_packages=False) %>
   prep:
     runs-on: ubuntu-latest
 <% if subdist == "nightly" %>
@@ -496,6 +496,11 @@
 
     needs:
       - prep
+<%- if native_packages %>
+      - native-sources
+      - native-packages
+      - publish-native
+<%- endif %>
     <%- if publish_all %>
       - collect
     <%- else %>

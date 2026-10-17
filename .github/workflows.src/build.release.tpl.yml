@@ -5,4 +5,99 @@ on:
   <<- workflow_dispatch() >>
 
 jobs:
-  <<- workflow(package, targets, publications, subdist="", publish_all=True) ->>
+  <<- workflow(package, targets, publications, subdist="", publish_all=True, native_packages=True) ->>
+
+<% raw %>
+  native-sources:
+    needs: collect
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+      startsWith(github.ref, 'refs/heads/release/')
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: builds-linux-*
+          path: dist/builds
+      - run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Collect the tested portable servers
+        id: identity
+        run: |
+          python3 - <<'PYTHON'
+          import gzip, os, shutil, subprocess, tempfile
+          from pathlib import Path
+          from scripts.native_packages import extract_portable, parse_identity
+          output = Path("dist/portable-server")
+          output.mkdir(parents=True)
+          identities = set()
+          for arch in ("x86_64", "aarch64"):
+              name = f"gel-server-{arch}-unknown-linux-gnu.tar.zst"
+              # metapkg names archives after the full build identity; the
+              # reusable interface uses stable architecture basenames.
+              directory = Path(f"dist/builds/builds-linux-{arch}")
+              archives = list(directory.rglob("*.tar.zst"))
+              if not archives:
+                  archives = list(directory.rglob("*.tar.gz"))
+              if len(archives) != 1:
+                  raise ValueError(f"expected one tested {name}, found {archives}")
+              if archives[0].name.endswith(".tar.gz"):
+                  with gzip.open(archives[0], "rb") as source, tempfile.TemporaryFile() as tar:
+                      shutil.copyfileobj(source, tar)
+                      tar.seek(0)
+                      with (output / name).open("wb") as target:
+                          subprocess.run(["zstd", "-c"], stdin=tar, stdout=target, check=True)
+              else:
+                  shutil.copyfile(archives[0], output / name)
+              with tempfile.TemporaryDirectory() as temp:
+                  tree = extract_portable(output / name, temp)
+                  identities.add(parse_identity(tree.name.removeprefix("gel-server-")))
+          if len(identities) != 1:
+              raise ValueError("portable architectures disagree on slot/version")
+          slot, version = identities.pop()
+          tag = f"pkg-gel-{slot}-{version.replace('~', '-')}-1"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              print(f"tag={tag}", file=stream)
+          PYTHON
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: portable-server
+          path: dist/portable-server/
+          if-no-files-found: error
+
+  native-packages:
+    needs: native-sources
+    permissions:
+      contents: write
+    uses: ./.github/workflows/native-packages.yml
+    with:
+      portable-artifact: portable-server
+    secrets:
+      PACKAGE_SIGNING_KEY: ${{ secrets.PACKAGE_SIGNING_KEY }}
+      PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
+
+  publish-native:
+    needs: [native-sources, native-packages, check-published-linux-x86_64, check-published-linux-aarch64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-packages
+          path: dist/native
+      - run: sudo apt-get update && sudo apt-get install -y rpm
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          version: "0.11.6"
+      - uses: gelstable/gel-registry/.github/actions/publish-native-release@6d3215a7bf494fed5ea0ccd670f7e765a2b70aac
+        with:
+          directory: dist/native
+          tag: ${{ needs.native-sources.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+<%- endraw -%>

@@ -23,6 +23,11 @@ contents:
   - src: ../../../gel-server-@SLOT@/bin/gel-server
     dst: /usr/lib/@TRIPLET@/gel-server-@SLOT@/bin/gel-server
     type: symlink
+    packager: deb
+  - src: ../../../lib/gel-server-@SLOT@/bin/gel-server
+    dst: /usr/lib64/gel-server-@SLOT@/bin/gel-server
+    type: symlink
+    packager: rpm
   - src: '${PORTABLE_TREE}/'
     dst: /usr/lib/gel-server-@SLOT@/
     type: tree

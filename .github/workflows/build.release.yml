@@ -704,6 +704,50 @@ jobs:
         PKG_PLATFORM_VERSION: "aarch64"
         PACKAGE_UPLOAD_SSH_KEY: "${{ secrets.PACKAGE_UPLOAD_SSH_KEY }}"
 
+  workflow-notifications:
+    if: failure() && github.event_name != 'pull_request'
+    name: Notify in Slack on failures
+
+    needs:
+      - prep
+      - native-sources
+      - native-packages
+      - publish-native
+      - collect
+      - build-linux-x86_64
+      - test-linux-x86_64
+      - publish-linux-x86_64
+      - check-published-linux-x86_64
+      - build-linux-aarch64
+      - test-linux-aarch64
+      - publish-linux-aarch64
+      - check-published-linux-aarch64
+      - build-linuxmusl-x86_64
+      - test-linuxmusl-x86_64
+      - publish-linuxmusl-x86_64
+      - check-published-linuxmusl-x86_64
+      - build-linuxmusl-aarch64
+      - test-linuxmusl-aarch64
+      - publish-linuxmusl-aarch64
+      - check-published-linuxmusl-aarch64
+      - build-macos-x86_64
+      - test-macos-x86_64
+      - publish-macos-x86_64
+      - build-macos-aarch64
+      - test-macos-aarch64
+      - publish-macos-aarch64
+    runs-on: ubuntu-latest
+    permissions:
+      actions: 'read'
+    steps:
+      - name: Slack Workflow Notification
+        uses: Gamesight/slack-workflow-status@26a36836c887f260477432e4314ec3490a84f309
+        with:
+          repo_token: ${{secrets.GITHUB_TOKEN}}
+          slack_webhook_url: ${{secrets.ACTIONS_SLACK_WEBHOOK_URL}}
+          name: 'Workflow notifications'
+          icon_emoji: ':hammer:'
+          include_jobs: 'on-failure'
   native-sources:
     needs: collect
     if: >-
@@ -796,48 +840,3 @@ jobs:
           tag: ${{ needs.native-sources.outputs.tag }}
         env:
           GH_TOKEN: ${{ github.token }}
-
-  workflow-notifications:
-    if: failure() && github.event_name != 'pull_request'
-    name: Notify in Slack on failures
-
-    needs:
-      - prep
-      - native-sources
-      - native-packages
-      - publish-native
-      - collect
-      - build-linux-x86_64
-      - test-linux-x86_64
-      - publish-linux-x86_64
-      - check-published-linux-x86_64
-      - build-linux-aarch64
-      - test-linux-aarch64
-      - publish-linux-aarch64
-      - check-published-linux-aarch64
-      - build-linuxmusl-x86_64
-      - test-linuxmusl-x86_64
-      - publish-linuxmusl-x86_64
-      - check-published-linuxmusl-x86_64
-      - build-linuxmusl-aarch64
-      - test-linuxmusl-aarch64
-      - publish-linuxmusl-aarch64
-      - check-published-linuxmusl-aarch64
-      - build-macos-x86_64
-      - test-macos-x86_64
-      - publish-macos-x86_64
-      - build-macos-aarch64
-      - test-macos-aarch64
-      - publish-macos-aarch64
-    runs-on: ubuntu-latest
-    permissions:
-      actions: 'read'
-    steps:
-      - name: Slack Workflow Notification
-        uses: Gamesight/slack-workflow-status@26a36836c887f260477432e4314ec3490a84f309
-        with:
-          repo_token: ${{secrets.GITHUB_TOKEN}}
-          slack_webhook_url: ${{secrets.ACTIONS_SLACK_WEBHOOK_URL}}
-          name: 'Workflow notifications'
-          icon_emoji: ':hammer:'
-          include_jobs: 'on-failure'

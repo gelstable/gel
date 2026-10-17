@@ -34,12 +34,19 @@ case "$arch" in
   arm64|aarch64) triplet=aarch64-linux-gnu ;;
 esac
 # Exercise the path retained in users' full systemd unit overrides.
-server="/usr/lib/$triplet/gel-server-$slot/bin/gel-server"
-test "$(readlink "$server")" = "../../../gel-server-$slot/bin/gel-server"
+if [[ "$format" == deb ]]; then
+  legacy_server="/usr/lib/$triplet/gel-server-$slot/bin/gel-server"
+  test "$(readlink "$legacy_server")" = "../../../gel-server-$slot/bin/gel-server"
+else
+  legacy_server="/usr/lib64/gel-server-$slot/bin/gel-server"
+  test "$(readlink "$legacy_server")" = "../../../lib/gel-server-$slot/bin/gel-server"
+  test ! -e "/usr/lib/$triplet/gel-server-$slot"
+fi
+server="/usr/bin/gel-server-$slot"
 args=(--data-dir="/var/lib/gel/$slot/data" --runstate-dir=/run/gel
       --tls-cert-mode=generate_self_signed --max-backend-connections=10
       --compiler-pool-size=1)
-runuser -u gel -- "$server" "${args[@]}" --bootstrap-only
+runuser -u gel -- "$legacy_server" "${args[@]}" --bootstrap-only
 setpriv --reuid=gel --regid=gel --init-groups "$server" "${args[@]}" > /tmp/gel-server.log 2>&1 &
 pid=$!
 cleanup() { kill -INT "$pid" 2>/dev/null || true; wait "$pid" || true; }
@@ -68,6 +75,7 @@ fi
 getent passwd gel
 test -f "/var/lib/gel/$slot/data/native-package-preserve"
 test ! -e "$server"
+test ! -e "$legacy_server"
 test ! -e "/usr/bin/edgedb-server-$slot"
 test ! -e "/lib/systemd/system/gel-server-$slot.service"
 echo "Installed, bootstrapped, queried, stopped and removed $format/$arch; account/data preserved"

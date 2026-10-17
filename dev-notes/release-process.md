@@ -148,6 +148,28 @@ both portable publication checks pass. This runs on the default and `release/*`
 branches. Nightly builds continue to publish portable artifacts only.
 The reusable workflow interface is documented in `packaging/native/README.md`.
 
+A server release is not complete for PostGIS users until its matching extension
+repack is published. For every new portable server build, including security
+updates, the release owner must:
+
+1. Publish and promote the portable server and its native packages. Verify that
+   the portable registry selects that exact server build for the affected slot.
+2. Dispatch `gel-postgis`'s `native-packages.yml` on its default branch with the
+   slot's extension `source_tag` and **`repack: true`**, even if the extension
+   version is unchanged. Without `repack`, the planner can return an empty plan.
+3. Check that the extension's required `gel-server-<slot>-build-<sha256>` equals
+   the capability provided by the new native server, then publish and promote
+   the extension repack. Do not announce the release as ready for PostGIS users
+   until this completes.
+4. On Debian and Rocky, upgrade an installation containing the previous server,
+   metapackage, and PostGIS together, and query a PostGIS geometry function.
+
+Until the matching repack reaches the repository, apt may hold the server back
+and dnf may reject its best update candidate. This protection is intentional;
+the release owner must complete the repack promptly, especially for security
+updates. Coordinated automatic PostGIS rebuilding is not implemented yet.
+
+
 ## Changelog
 
 Each major release has a changelog page in the docs (i.e.

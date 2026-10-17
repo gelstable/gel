@@ -109,6 +109,7 @@ class NativePackagesTests(unittest.TestCase):
                                 self.assertIn('Provides: ' + self.native.server_build_dependency(identity), result)
                                 extracted = out / 'extracted'
                                 subprocess.run(['dpkg-deb', '-x', str(package), str(extracted)], check=True)
+                                self.assertFalse((extracted / 'usr/lib64/gel-server-7').exists())
                                 self.assertEqual(
                                     (extracted / 'usr/lib/x86_64-linux-gnu/gel-server-7/bin/gel-server').read_text(),
                                     '#!/bin/sh\nexit 0\n',
@@ -128,6 +129,12 @@ class NativePackagesTests(unittest.TestCase):
                             self.assertEqual(
                                 result, f'{family}-7 1:{version}-3 x86_64'
                             )
+                            if family == 'gel-server':
+                                files = subprocess.check_output(
+                                    ['rpm', '-qpl', str(package)], text=True
+                                ).splitlines()
+                                self.assertIn('/usr/lib64/gel-server-7/bin/gel-server', files)
+                                self.assertFalse(any('/x86_64-linux-gnu/' in path for path in files))
                             requirements = subprocess.check_output(
                                 ['rpm', '-qp', '--requires', str(package)],
                                 text=True,
