@@ -22,13 +22,20 @@ ARCHES = {'x86_64': ('amd64', 'x86_64'), 'aarch64': ('arm64', 'aarch64')}
 def parse_identity(identity):
     match = re.fullmatch(
         r'([1-9][0-9]*)(\.[0-9]+(?:\.[0-9]+)?)(-[a-z]+\.[0-9]+)?'
-        r'\+([A-Za-z0-9.]+)',
+        r'\+([A-Za-z0-9._]+)',
         identity,
     )
     if not match:
         raise ValueError(f'unsupported portable build identity: {identity}')
     version = identity.split('+', 1)[0].replace('-', '~', 1)
     return match[1], version
+
+
+def server_build_dependency(identity):
+    """A package capability tied to the complete portable build, across repacks."""
+    slot, _ = parse_identity(identity)
+    digest = hashlib.sha256(identity.encode("ascii")).hexdigest()
+    return f"gel-server-{slot}-build-{digest}"
 
 
 def extract_portable(archive, directory):
@@ -71,6 +78,8 @@ def render_configs(tree, arch, revision, directory):
         'REVISION': revision,
         'ARCH': ARCHES[arch][0],
         'IDENTITY': identity,
+        'SERVER_BUILD': server_build_dependency(identity),
+        'TRIPLET': arch + '-linux-gnu',
         'RENDERED_DIR': str(directory),
     }
     for name in [

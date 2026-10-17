@@ -11,12 +11,18 @@ license: Apache-2.0
 section: database
 priority: optional
 description: 'Gel graph-relational database server (portable build @IDENTITY@).'
+provides:
+  - @SERVER_BUILD@
 conflicts:
   - edgedb-common
 replaces:
   - edgedb-common
   - edgedb-server-@SLOT@
 contents:
+  # Preserve paths in full systemd unit overrides from legacy packages.
+  - src: ../../../gel-server-@SLOT@/bin/gel-server
+    dst: /usr/lib/@TRIPLET@/gel-server-@SLOT@/bin/gel-server
+    type: symlink
   - src: '${PORTABLE_TREE}/'
     dst: /usr/lib/gel-server-@SLOT@/
     type: tree

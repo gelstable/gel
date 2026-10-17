@@ -26,6 +26,10 @@ jobs:
       PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
 ```
 
+`build.release.yml` uses this interface after portable tests pass and publishes
+the native release after both glibc portable publication checks pass. Nightly
+builds publish portable artifacts only.
+
 `portable` is the caller's artifact-uploading job. The signing job receives the
 Environment values; no repository-level copies of the signing key are needed.
 The caller is responsible for the integrity of its portable artifact.
@@ -105,3 +109,11 @@ Migration uses unversioned Replaces/Obsoletes for `edgedb-common` and
 `edgedb-server-<slot>`, plus Conflicts `edgedb-common`. The old catalog Provides
 is omitted: extensions use slot compatibility. The distro library constraints
 are omitted because the portable tree bundles its dependencies.
+
+The server provides `gel-server-<slot>-build-<sha256>` for the SHA256 of its
+complete portable identity. Extension packages require this capability so an
+upgrade to a different portable build cannot leave incompatible extension files.
+The legacy `/usr/lib/<triplet>/gel-server-<slot>/bin/gel-server` path remains a
+symlink to the new executable, preserving full systemd unit overrides created
+before migration. Keeping the directory avoids directory-to-symlink upgrade
+conflicts with legacy packages.

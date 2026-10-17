@@ -23,6 +23,7 @@ class NativePackagesTests(unittest.TestCase):
     def test_versions_and_config(self):
         for identity, expected in [
             ('7.1+ec15259', '7.1'),
+            ('7.1+gec15259.cv2025_20261017', '7.1'),
             ('7.2-rc.1+abc', '7.2~rc.1'),
         ]:
             with (
@@ -43,6 +44,8 @@ class NativePackagesTests(unittest.TestCase):
                 self.assertIn('type: tree', server)
                 self.assertIn('/usr/lib/gel-server-7/', server)
                 self.assertNotIn('libsystemd-dev', server)
+                self.assertIn(self.native.server_build_dependency(identity), server)
+                self.assertIn('/usr/lib/x86_64-linux-gnu/gel-server-7', server)
 
     @unittest.skipUnless(
         all(shutil.which(tool) for tool in ['nfpm', 'dpkg-deb', 'rpm', 'zstd']),
@@ -90,6 +93,7 @@ class NativePackagesTests(unittest.TestCase):
                                     'Version',
                                     'Architecture',
                                     'Depends',
+                                    'Provides',
                                 ],
                                 text=True,
                             )
@@ -101,6 +105,14 @@ class NativePackagesTests(unittest.TestCase):
                                 else 'libc6'
                             )
                             self.assertIn('Depends: ' + dependency, result)
+                            if family == 'gel-server':
+                                self.assertIn('Provides: ' + self.native.server_build_dependency(identity), result)
+                                extracted = out / 'extracted'
+                                subprocess.run(['dpkg-deb', '-x', str(package), str(extracted)], check=True)
+                                self.assertEqual(
+                                    (extracted / 'usr/lib/x86_64-linux-gnu/gel-server-7/bin/gel-server').read_text(),
+                                    '#!/bin/sh\nexit 0\n',
+                                )
                         else:
                             result = subprocess.check_output(
                                 [

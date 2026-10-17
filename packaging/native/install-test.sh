@@ -29,7 +29,13 @@ test ! -e "/etc/systemd/system/multi-user.target.wants/gel-server-$slot.service"
 # Small explicit pool limits keep the test affordable on emulated local runners.
 mkdir -p /run/gel
 chown gel:gel /run/gel
-server="/usr/bin/gel-server-$slot"
+case "$arch" in
+  amd64|x86_64) triplet=x86_64-linux-gnu ;;
+  arm64|aarch64) triplet=aarch64-linux-gnu ;;
+esac
+# Exercise the path retained in users' full systemd unit overrides.
+server="/usr/lib/$triplet/gel-server-$slot/bin/gel-server"
+test "$(readlink "$server")" = "../../../gel-server-$slot/bin/gel-server"
 args=(--data-dir="/var/lib/gel/$slot/data" --runstate-dir=/run/gel
       --tls-cert-mode=generate_self_signed --max-backend-connections=10
       --compiler-pool-size=1)

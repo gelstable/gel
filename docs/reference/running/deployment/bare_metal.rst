@@ -39,7 +39,7 @@ Remove any old Gel entries from your APT source configuration when migrating.
 The epoch in the new packages makes them upgrade existing packages in place.
 
 RHEL/Rocky Linux 9
------------------
+------------------
 
 Import the Gelstable packaging key and add the stable repository. Packages are
 available for x86_64 and aarch64. Before importing the downloaded key, compare
@@ -275,7 +275,7 @@ Debian/Ubuntu LTS
 
 
 RHEL/Rocky Linux 9
------------------
+------------------
 
 .. code-block:: bash
 
