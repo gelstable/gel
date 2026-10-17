@@ -46,6 +46,15 @@ PGVECTOR_REPO = 'https://github.com/pgvector/pgvector.git'
 # This can be a branch, tag, or commit
 PGVECTOR_COMMIT = 'v0.7.4'
 
+# PostgreSQL client tools (pg_dump, pg_restore, psql and libpq) are built
+# from a newer upstream release than the bundled server.  pg_dump refuses
+# to dump servers of a newer major version than its own, but supports all
+# older ones, so this lets branch creation work against remote backends
+# running a newer PostgreSQL than the one we bundle.
+PG_CLIENT_REPO = 'https://github.com/postgres/postgres.git'
+# This must be a branch or tag
+PG_CLIENT_COMMIT = 'REL_18_6'
+
 SAFE_EXT_CFLAGS: list[str] = []
 if flag := os.environ.get('EDGEDB_OPT_CFLAG'):
     SAFE_EXT_CFLAGS += [flag]
@@ -303,6 +312,7 @@ def _compile_postgres(build_base, build_temp, *,
         ).resolve()
         _compile_pgvector(pg_config, build_temp)
         _compile_edb_stat_statements(pg_config, build_temp)
+        _compile_pg_client_tools(postgres_build, build_temp)
 
         with open(postgres_build_stamp, 'w') as f:
             f.write(source_stamp)
@@ -369,6 +379,50 @@ def _compile_pgvector(pg_config, build_temp):
         cwd=pgv_root,
         check=True,
     )
+
+
+def _compile_pg_client_tools(postgres_build, build_temp):
+    pgc_root = (build_temp / 'postgres-client').resolve()
+    if pgc_root.exists():
+        shutil.rmtree(pgc_root)
+    subprocess.run(
+        [
+            'git',
+            'clone',
+            '--depth', '1',
+            '--branch', PG_CLIENT_COMMIT,
+            PG_CLIENT_REPO,
+            pgc_root,
+        ],
+        check=True
+    )
+
+    # Install over the bundled server's installation so that the
+    # client binaries are found next to pg_config.  The newer libpq
+    # keeps the same soname and is backwards compatible.
+    subprocess.run(
+        [
+            str(pgc_root / 'configure'),
+            '--prefix=' + str(postgres_build / 'install'),
+            '--with-openssl',
+        ],
+        check=True,
+        cwd=pgc_root,
+        env=_get_env_with_openssl_flags(),
+    )
+
+    make_args = ['MAKELEVEL=0', '-j', str(max(os.cpu_count() - 1, 1))]
+    for subdir in ['src/interfaces/libpq', 'src/bin/pg_dump', 'src/bin/psql']:
+        subprocess.run(
+            ['make', '-C', subdir, *make_args],
+            cwd=pgc_root,
+            check=True,
+        )
+        subprocess.run(
+            ['make', '-C', subdir, 'MAKELEVEL=0', 'install'],
+            cwd=pgc_root,
+            check=True,
+        )
 
 
 def _compile_edb_stat_statements(pg_config, build_temp):
@@ -505,7 +559,7 @@ def _get_pg_source_stamp():
         ],
     )
     edbss = binascii.hexlify(edbss_hash).decode()
-    stamp_list = [revision, PGVECTOR_COMMIT + '_v3', edbss]
+    stamp_list = [revision, PGVECTOR_COMMIT + '_v3', PG_CLIENT_COMMIT, edbss]
     if os.environ.get('EDGEDB_DEBUG'):
         stamp_list += ['debug']
     source_stamp = '+'.join(stamp_list)
