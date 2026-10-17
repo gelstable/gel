@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres-version: [ 17 ]
+        postgres-version: [ 18 ]
         single-mode:
          - ''
          # These are very broken. Disabling them for now until we
@@ -48,13 +48,16 @@ jobs:
             multi-tenant-mode: ''
           - postgres-version: 17
             single-mode: ''
+            multi-tenant-mode: ''
+          - postgres-version: 18
+            single-mode: ''
             multi-tenant-mode: 'remote-compiler'
-          - postgres-version: 17
+          - postgres-version: 18
             single-mode: ''
             multi-tenant-mode: 'multi-tenant'
     services:
       postgres:
-        image: pgvector/pgvector:0.7.4-pg${{ matrix.postgres-version }}
+        image: pgvector/pgvector:0.8.1-pg${{ matrix.postgres-version }}
         env:
           POSTGRES_PASSWORD: postgres
         options: >-
