@@ -3,9 +3,9 @@
 Deprecates release instruction from
 [RFC 2](https://github.com/edgedb/rfcs/blob/master/text/0002-edgedb-release-process.rst).
 
-EdgeDB packages are published on https://packages.edgedb.com.
-They are build in GitHub Actions pipelines, using
-https://github.com/edgedb/edgedb-pkg.
+Portable builds are produced by the GitHub Actions pipelines using gel-pkg.
+Native APT/RPM packages are built from published portable releases and served
+through https://registry.gelstable.com.
 
 Releases are built from a release branch associated with a major version
 (i.e. "release/4.x"). At feature freeze, we create this branch. From that moment
@@ -136,6 +136,39 @@ It will not publish any packages if any of the tests fail.
 
 Sometimes, tests will be flakey and just need to be re-run.
 You can do that with a button top-right.
+
+## Native APT/RPM packages
+
+To package an existing portable release, dispatch `native-packages.yml` on
+`master` with `source_tag` (for example `v7.1`). An already packaged version is
+a successful no-op; also check `repack` to publish the next native revision.
+`build.release.yml` collects the tested glibc portable artifacts, calls the
+reusable packaging workflow, and publishes the signed native release after
+both portable publication checks pass. This runs on the default and `release/*`
+branches. Nightly builds continue to publish portable artifacts only.
+The reusable workflow interface is documented in `packaging/native/README.md`.
+
+A server release is not complete for PostGIS users until its matching extension
+repack is published. For every new portable server build, including security
+updates, the release owner must:
+
+1. Publish and promote the portable server and its native packages. Verify that
+   the portable registry selects that exact server build for the affected slot.
+2. Dispatch `gel-postgis`'s `native-packages.yml` on its default branch with the
+   slot's extension `source_tag` and **`repack: true`**, even if the extension
+   version is unchanged. Without `repack`, the planner can return an empty plan.
+3. Check that the extension's required `gel-server-<slot>-build-<sha256>` equals
+   the capability provided by the new native server, then publish and promote
+   the extension repack. Do not announce the release as ready for PostGIS users
+   until this completes.
+4. On Debian and Rocky, upgrade an installation containing the previous server,
+   metapackage, and PostGIS together, and query a PostGIS geometry function.
+
+Until the matching repack reaches the repository, apt may hold the server back
+and dnf may reject its best update candidate. This protection is intentional;
+the release owner must complete the repack promptly, especially for security
+updates. Coordinated automatic PostGIS rebuilding is not implemented yet.
+
 
 ## Changelog
 
