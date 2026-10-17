@@ -1,0 +1,83 @@
+From bc7e7b7e9df12cb035f9f6b9deac24e42286ded7 Mon Sep 17 00:00:00 2001
+From: Elvis Pranskevichus <elvis@magic.io>
+Date: Fri, 16 Oct 2026 08:15:29 -0400
+Subject: [PATCH] Avoid table rewrite when adding nullable columns of
+ constrained domains
+
+---
+ src/backend/commands/tablecmds.c   | 13 +++++++++++--
+ src/backend/utils/cache/typcache.c | 19 +++++++++++++++++++
+ src/include/utils/typcache.h       |  2 ++
+ 3 files changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/src/backend/commands/tablecmds.c b/src/backend/commands/tablecmds.c
+index 74b56ec..ebda216 100644
+--- a/src/backend/commands/tablecmds.c
++++ b/src/backend/commands/tablecmds.c
+@@ -7531,9 +7531,18 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
+ 		else
+ 			defval = (Expr *) build_column_default(rel, attribute->attnum);
+ 
+-		/* Build CoerceToDomain(NULL) expression if needed */
++		/*
++		 * Build CoerceToDomain(NULL) expression if needed.
++		 *
++		 * Gel: EdgeQL does not allow for NULL checks in domain constraints,
++		 * so we can safely skip an expensive table rewrite when adding a
++		 * nullable column without a default (though keep it for domains
++		 * declared as NOT NULL just in case something somewhere uses them
++		 * outside of EdgeQL schema).
++		 */
+ 		has_domain_constraints = DomainHasConstraints(attribute->atttypid, NULL);
+-		if (!defval && has_domain_constraints)
++		if (!defval && has_domain_constraints &&
++			DomainIsStrict(attribute->atttypid))
+ 		{
+ 			Oid			baseTypeId;
+ 			int32		baseTypeMod;
+diff --git a/src/backend/utils/cache/typcache.c b/src/backend/utils/cache/typcache.c
+index 650b5d9..84c5f1a 100644
+--- a/src/backend/utils/cache/typcache.c
++++ b/src/backend/utils/cache/typcache.c
+@@ -1527,6 +1527,25 @@ DomainHasConstraints(Oid type_id, bool *has_volatile)
+ }
+ 
+ 
++/*
++ * DomainIsStrict --- routine to check if a domain has a NOT NULL constraint
++ */
++bool
++DomainIsStrict(Oid type_id)
++{
++	HeapTuple	tup;
++	Form_pg_type typTup;
++	bool		notnull;
++
++	tup = SearchSysCache1(TYPEOID, ObjectIdGetDatum(type_id));
++	if (!HeapTupleIsValid(tup))
++		elog(ERROR, "cache lookup failed for type %u", type_id);
++	typTup = (Form_pg_type) GETSTRUCT(tup);
++	notnull = typTup->typnotnull;
++	ReleaseSysCache(tup);
++	return notnull;
++}
++
+ /*
+  * array_element_has_equality and friends are helper routines to check
+  * whether we should believe that array_eq and related functions will work
+diff --git a/src/include/utils/typcache.h b/src/include/utils/typcache.h
+index 5a4aa9e..29b7e07 100644
+--- a/src/include/utils/typcache.h
++++ b/src/include/utils/typcache.h
+@@ -185,6 +185,8 @@ extern void UpdateDomainConstraintRef(DomainConstraintRef *ref);
+ 
+ extern bool DomainHasConstraints(Oid type_id, bool *has_volatile);
+ 
++extern bool DomainIsStrict(Oid type_id);
++
+ extern TupleDesc lookup_rowtype_tupdesc(Oid type_id, int32 typmod);
+ 
+ extern TupleDesc lookup_rowtype_tupdesc_noerror(Oid type_id, int32 typmod,
+-- 
+2.54.0
+
