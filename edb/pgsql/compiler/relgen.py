@@ -52,6 +52,7 @@ from edb.pgsql import ast as pgast
 from edb.pgsql import common
 from edb.pgsql import types as pg_types
 
+from edb.common import ast as ast_visitor
 from edb.common.typeutils import not_none
 
 from . import astutils
@@ -1567,7 +1568,19 @@ def process_set_as_subquery(
         else:
             dispatch.visit(expr, ctx=newctx)
 
-        if semi_join:
+        if semi_join and _contains_existence_assertion(expr):
+            # The computable asserts that something exists (for
+            # example, that a required link is not hidden by an access
+            # policy). A semi-join would let PostgreSQL skip evaluating
+            # the computable entirely if the set of candidate targets is
+            # empty (it does so with the right semi joins of PostgreSQL
+            # 18), so the assertion would never fire.  Deduplicate the
+            # result of the computable instead.
+            identity_var = pathctx.get_path_identity_var(
+                stmt, ir_set.path_id, env=ctx.env)
+            assert isinstance(identity_var, pgast.OutputVar)
+            stmt.distinct_clause = [identity_var]
+        elif semi_join:
             set_rvar = relctx.new_root_rvar(ir_set, ctx=newctx)
             tgt_ref = pathctx.get_rvar_path_identity_var(
                 set_rvar, ir_set.path_id, env=ctx.env)
@@ -1601,6 +1614,15 @@ def process_set_as_subquery(
         )
 
     return rvars
+
+
+def _contains_existence_assertion(expr: irast.Base) -> bool:
+    return bool(ast_visitor.find_children(
+        expr,
+        irast.FunctionCall,
+        lambda n: str(n.func_shortname) == 'std::assert_exists',
+        terminate_early=True,
+    ))
 
 
 register_get_rvar(irast.Stmt)(process_set_as_subquery)

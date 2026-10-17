@@ -21,30 +21,33 @@ from __future__ import annotations
 import asyncio
 import json
 import textwrap
-from typing import Mapping
+from typing import Any, Mapping, Optional
+
+import click
 
 from edb.tools.edb import edbcommands
 
 
-async def run():
+async def run(dsns: tuple[str, ...]):
     import asyncpg
 
-    schemas_by_version = {}
+    schemas_by_version: dict[int, Any] = {}
 
     # docker run -p 5413:5432 --rm -e POSTGRES_PASSWORD=pass postgres:13
     # docker run -p 5414:5432 --rm -e POSTGRES_PASSWORD=pass postgres:14
     # docker run -p 5415:5432 --rm -e POSTGRES_PASSWORD=pass postgres:15
     # docker run -p 5416:5432 --rm -e POSTGRES_PASSWORD=pass postgres:16
     # docker run -p 5417:5432 --rm -e POSTGRES_PASSWORD=pass postgres:17
-    for port in [5413, 5414, 5415, 5416, 5417]:
+    # docker run -p 5418:5432 --rm -e POSTGRES_PASSWORD=pass postgres:18
+    # docker run -p 5419:5432 --rm -e POSTGRES_PASSWORD=pass postgres:19
+    if not dsns:
+        dsns = tuple(
+            f'postgres://postgres:pass@localhost:{port}/postgres'
+            for port in range(5413, 5420)
+        )
+    for dsn in dsns:
         await query_instance(
-            await asyncpg.connect(
-                host='localhost',
-                database='postgres',
-                user='postgres',
-                password='pass',
-                port=str(port),
-            ),
+            await asyncpg.connect(dsn),
             schemas_by_version,
         )
 
@@ -61,10 +64,8 @@ async def query_instance(c, schemas_by_version):
 
     assert isinstance(c, asyncpg.Connection)
 
-    [[version_string]] = await c.fetch('SELECT version()')
-    assert isinstance(version_string, str)
-    version_string = version_string.removeprefix('PostgreSQL ')
-    version_major = int(version_string.split(' ')[0].split('.')[0])
+    [[version_num]] = await c.fetch('SHOW server_version_num')
+    version_major = int(version_num) // 10000
 
     print(f'querying PostgreSQL {version_major}')
 
@@ -113,10 +114,20 @@ def print_header(f):
 
         """Declarations of information schema and pg_catalog"""
 
-        from typing import Tuple, Dict, List
-
         ColumnName = str
         ColumnType = str | None
+        # (name, type, first PostgreSQL major version that has the column,
+        #  first PostgreSQL major version that no longer has it or None)
+        Column = tuple[ColumnName, ColumnType, int, int | None]
+
+
+        def column_exists_in(
+            ver_since: int, ver_until: int | None, version: int
+        ) -> bool:
+            return ver_since <= version and (
+                ver_until is None or version < ver_until
+            )
+
         '''
         )[1:],
         file=f,
@@ -133,53 +144,70 @@ def print_schema(
     """
     Generates Python dict source for tables of a given PostgreSQL schema and
     writes it into a file. Param `tables` can contain data for more than one
-    version of PostgreSQL. This function will generate code for the latest
-    PostgreSQL version and search previous versions to determine the first
-    version that contains each column.
+    version of PostgreSQL. This function will generate code for the union
+    of all columns across all versions. Columns are ordered as in the latest
+    version that has the table; columns that were removed in later versions
+    are placed after the column that preceded them when they were last present.
+    For every column the range of versions that contain it is recorded.
     """
     print(f'Code generation of schema "{schema_name}"')
 
-    version_latest = max(iter(schemas_by_version.keys()))
-    versions_desc = list(schemas_by_version.keys())
-    versions_desc.sort(reverse=True)
-    versions_desc = versions_desc[1:]
+    versions = sorted(schemas_by_version.keys())
+    version_latest = versions[-1]
 
-    schemas_latest = schemas_by_version[version_latest]
-    tables_latest = schemas_latest[schema_name]
+    # table name -> list of (col_name, col_type)
+    merged: dict[str, list[tuple[str, str]]] = {}
+    # (table name, col name) -> versions that have this column
+    present: dict[tuple[str, str], list[int]] = {}
 
-    typ = ': Dict[str, List[Tuple[ColumnName, ColumnType, int]]]'
+    for v in reversed(versions):
+        for table, columns in schemas_by_version[v][schema_name].items():
+            cols = merged.setdefault(table, [])
+            names = [c for c, _ in cols]
+            prev: Optional[str] = None
+            for col_name, col_typ in columns:
+                present.setdefault((table, col_name), []).append(v)
+                if col_name not in names:
+                    pos = names.index(prev) + 1 if prev is not None else 0
+                    cols.insert(pos, (col_name, col_typ))
+                    names.insert(pos, col_name)
+                prev = col_name
+
+    typ = ': dict[str, list[Column]]'
     print(schema_name.upper() + typ + " = {", file=f)
-    for index, (table, columns) in enumerate(tables_latest.items()):
+    for table in sorted(merged):
         print(f'    "{table}": [', file=f)
-        for [col_name, col_typ] in columns:
-
-            ver_since = version_latest
-            for v in versions_desc:
-                schema = schemas_by_version.get(v)
-                assert schema
-                tbls = schema.get(schema_name)
-                assert tbls
-                tbl = tbls.get(table, None)
-                if tbl is None:
-                    break
-                c = next((True for c, _ in tbl if c == col_name), False)
-                if not c:
-                    break
-                ver_since = v
+        for col_name, col_typ in merged[table]:
+            vers = sorted(present[(table, col_name)])
+            ver_since = vers[0]
+            ver_until = None
+            if vers[-1] != version_latest:
+                ver_until = versions[versions.index(vers[-1]) + 1]
+            contiguous = [v for v in versions if ver_since <= v <= vers[-1]]
+            assert vers == contiguous, (
+                f'{table}.{col_name} is not present in a contiguous range '
+                f'of versions: {vers}'
+            )
 
             if col_typ == "ARRAY" or col_typ.startswith("any"):
                 col_typ = "None"
             else:
                 col_typ = col_typ.replace('"', '\\"')
                 col_typ = f'"{col_typ}"'
-            print(f'        ("{col_name}", {col_typ}, {ver_since}),', file=f)
-
-        last = index == len(tables_latest) - 1
-        comma = ',' if not last else ''
-        print(f'    ]{comma}', file=f)
+            print(
+                f'        ("{col_name}", {col_typ}, {ver_since}, {ver_until}),',
+                file=f,
+            )
+        print('    ],', file=f)
     print('}', file=f)
 
 
 @edbcommands.command("gen-sql-introspection")
-def main():
-    asyncio.run(run())
+@click.argument("dsns", nargs=-1)
+def main(dsns: tuple[str, ...]):
+    """Regenerate edb/pgsql/resolver/sql_introspection.py.
+
+    DSNS are connection strings of PostgreSQL instances of all supported
+    versions (by default localhost ports 5413-5419).
+    """
+    asyncio.run(run(dsns))

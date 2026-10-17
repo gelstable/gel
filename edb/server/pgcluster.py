@@ -315,7 +315,13 @@ class BaseCluster:
             log_stdout=False,
             env=env,
         )
-        return b'\n'.join(stdout_lines)
+        # The dump is executed directly rather than via psql, so drop the
+        # \restrict and \unrestrict psql meta-commands that pg_dump emits
+        # since PostgreSQL 17.6 (CVE-2025-8714).
+        return b'\n'.join(
+            line for line in stdout_lines
+            if not line.startswith((b'\\restrict ', b'\\unrestrict '))
+        )
 
     async def _copy_database(
         self,
