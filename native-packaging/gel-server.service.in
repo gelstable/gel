@@ -1,0 +1,24 @@
+[Unit]
+Description=Next generation graph-relational database
+Documentation=https://geldata.com/
+After=syslog.target
+After=network.target
+
+[Service]
+Type=notify
+
+User=gel
+Group=gel
+
+Environment=GELDATA=/var/lib/gel/@SLOT@/data/
+RuntimeDirectory=gel
+
+ExecStartPre=
+ExecStart=/usr/lib/gel-server-@SLOT@/bin/gel-server --data-dir=${GELDATA} --runstate-dir=%t/gel --tls-cert-mode=generate_self_signed
+ExecReload=/bin/kill -HUP ${MAINPID}
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=0
+
+[Install]
+WantedBy=multi-user.target

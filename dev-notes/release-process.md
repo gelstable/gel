@@ -3,9 +3,9 @@
 Deprecates release instruction from
 [RFC 2](https://github.com/edgedb/rfcs/blob/master/text/0002-edgedb-release-process.rst).
 
-EdgeDB packages are published on https://packages.edgedb.com.
-They are build in GitHub Actions pipelines, using
-https://github.com/edgedb/edgedb-pkg.
+Native APT/RPM packages are built from published portable releases and served
+through https://registry.gelstable.com. This repository does not build new
+portable releases yet; see "Release pipeline" below.
 
 Releases are built from a release branch associated with a major version
 (i.e. "release/4.x"). At feature freeze, we create this branch. From that moment
@@ -19,7 +19,7 @@ Before the major version, we publish "testing releases":
 
 ## Internal Communication
 
-Announce on team slack when you are beginning to prepare a release,
+Announce on the team Discord when you are beginning to prepare a release,
 when a release build has been kicked off, and when the release has
 succeeded. Update the thread with any problems and attempted
 resolutions.
@@ -118,24 +118,41 @@ A few pointers:
 
 ## Release pipeline
 
-When you have your commits ready, tag the commit and push:
+There is no pipeline for building new portable releases yet. The inherited
+workflows built them with gel-pkg on Gel Data's infrastructure and have been
+removed. The existing portable releases were imported into GitHub releases, and
+a Gelstable-owned pipeline that builds portable archives, calls
+`native-packages.yml`, and drafts the GitHub release will replace them.
 
-```
-# git tag --sign v4.5
-# git push origin releases/4.x --follow-tags
-```
+## Native APT/RPM packages
 
-Then open GitHub Actions page and run one of these pipelines:
+To package an existing portable release, dispatch `native-packages.yml` on
+`master` with `source_tag` (for example `v7.1`). An already packaged version is
+a successful no-op; also check `repack` to publish the next native revision.
+The future release pipeline will call `native-packages.yml` through its
+`workflow_call` interface, which is documented in `native-packaging/README.md`.
 
-- https://github.com/edgedb/edgedb/actions/workflows/testing.yml
-- https://github.com/edgedb/edgedb/actions/workflows/release.yml
+A server release is not complete for PostGIS users until its matching extension
+repack is published. For every new portable server build, including security
+updates, the release owner must:
 
-This will kick-off an GHA workflow that should take ~3 hours.
-It will build, test and publish for each of the supported platforms.
-It will not publish any packages if any of the tests fail.
+1. Publish and promote the portable server and its native packages. Verify that
+   the portable registry selects that exact server build for the affected slot.
+2. Dispatch `gel-postgis`'s `native-packages.yml` on its default branch with the
+   slot's extension `source_tag` and **`repack: true`**, even if the extension
+   version is unchanged. Without `repack`, the planner can return an empty plan.
+3. Check that the extension's required `gel-server-<slot>-build-<sha256>` equals
+   the capability provided by the new native server, then publish and promote
+   the extension repack. Do not announce the release as ready for PostGIS users
+   until this completes.
+4. On Debian and Rocky, upgrade an installation containing the previous server,
+   metapackage, and PostGIS together, and query a PostGIS geometry function.
 
-Sometimes, tests will be flakey and just need to be re-run.
-You can do that with a button top-right.
+Until the matching repack reaches the repository, apt may hold the server back
+and dnf may reject its best update candidate. This protection is intentional;
+the release owner must complete the repack promptly, especially for security
+updates. Coordinated automatic PostGIS rebuilding is not implemented yet.
+
 
 ## Changelog
 
