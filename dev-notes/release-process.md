@@ -146,7 +146,7 @@ a successful no-op; also check `repack` to publish the next native revision.
 reusable packaging workflow, and publishes the signed native release after
 both portable publication checks pass. This runs on the default and `release/*`
 branches. Nightly builds continue to publish portable artifacts only.
-The reusable workflow interface is documented in `packaging/native/README.md`.
+The reusable workflow interface is documented in `native-packaging/README.md`.
 
 A server release is not complete for PostGIS users until its matching extension
 repack is published. For every new portable server build, including security

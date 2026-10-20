@@ -33,7 +33,7 @@ on:
   pull_request:
     paths:
       - scripts/native_packages.py
-      - packaging/native/**
+      - native-packaging/**
       - tests/test_native_packages.py
       - .github/workflows/native-packages.yml
 permissions:
@@ -133,8 +133,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           slot=$(jq -r .slot "dist/native/build-info-$ARCH.json")
-          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" debian:12 bash /test/install-test.sh deb "$DEB_ARCH" "$slot"
-          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/packaging/native:/test:ro" rockylinux:9 bash /test/install-test.sh rpm "$RPM_ARCH" "$slot"
+          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/native-packaging:/test:ro" debian:12 bash /test/install-test.sh deb "$DEB_ARCH" "$slot"
+          docker run --rm -v "$PWD/dist/native:/packages:ro" -v "$PWD/dist/cli:/cli:ro" -v "$PWD/native-packaging:/test:ro" rockylinux:9 bash /test/install-test.sh rpm "$RPM_ARCH" "$slot"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-native-${{ matrix.arch }}

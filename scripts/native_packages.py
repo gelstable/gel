@@ -91,7 +91,7 @@ def render_configs(tree, arch, revision, directory):
         'preremove.sh',
         'postremove.sh',
     ]:
-        text = (ROOT / 'packaging/native' / name).read_text()
+        text = (ROOT / 'native-packaging' / name).read_text()
         for key, value in values.items():
             text = text.replace('@' + key + '@', value)
         target = name.removesuffix('.in')
