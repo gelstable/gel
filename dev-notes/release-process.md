@@ -127,8 +127,11 @@ When you have your commits ready, tag the commit and push:
 
 Then open GitHub Actions page and run one of these pipelines:
 
-- https://github.com/edgedb/edgedb/actions/workflows/testing.yml
-- https://github.com/edgedb/edgedb/actions/workflows/release.yml
+- https://github.com/gelstable/gel/actions/workflows/build.testing.yml
+- https://github.com/gelstable/gel/actions/workflows/build.release.yml
+
+Both call `build.yml`, which does the work. To build and test without
+publishing, run `build.dryrun.yml`.
 
 This will kick-off an GHA workflow that should take ~3 hours.
 It will build, test and publish for each of the supported platforms.
@@ -142,10 +145,10 @@ You can do that with a button top-right.
 To package an existing portable release, dispatch `native-packages.yml` on
 `master` with `source_tag` (for example `v7.1`). An already packaged version is
 a successful no-op; also check `repack` to publish the next native revision.
-`build.release.yml` collects the tested glibc portable artifacts, calls the
-reusable packaging workflow, and publishes the signed native release after
-both portable publication checks pass. This runs on the default and `release/*`
-branches. Nightly builds continue to publish portable artifacts only.
+After the portable packages are published and checked, `build.release.yml`
+collects the glibc portable artifacts, calls the reusable packaging workflow,
+and publishes the signed native release. This runs on the default and
+`release/*` branches. Testing releases publish portable artifacts only.
 The reusable workflow interface is documented in `native-packaging/README.md`.
 
 A server release is not complete for PostGIS users until its matching extension

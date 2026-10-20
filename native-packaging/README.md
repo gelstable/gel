@@ -26,9 +26,9 @@ jobs:
       PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
 ```
 
-`build.release.yml` uses this interface after portable tests pass and publishes
-the native release after both glibc portable publication checks pass. Nightly
-builds publish portable artifacts only.
+`build.release.yml` uses this interface once the portable packages are built,
+tested, published, and their publication checks pass, then publishes the native
+release. Testing releases publish portable artifacts only.
 
 `portable` is the caller's artifact-uploading job. The signing job receives the
 Environment values; no repository-level copies of the signing key are needed.
