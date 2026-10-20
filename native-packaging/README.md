@@ -26,10 +26,6 @@ jobs:
       PACKAGE_SIGNING_FPR: ${{ secrets.PACKAGE_SIGNING_FPR }}
 ```
 
-`build.release.yml` uses this interface once the portable packages are built,
-tested, published, and their publication checks pass, then publishes the native
-release. Testing releases publish portable artifacts only.
-
 `portable` is the caller's artifact-uploading job. The signing job receives the
 Environment values; no repository-level copies of the signing key are needed.
 The caller is responsible for the integrity of its portable artifact.
